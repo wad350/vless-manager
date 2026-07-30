@@ -1,30 +1,62 @@
 # VLESS Manager
 
-VLESS Manager is a lightweight VPN manager for Keenetic routers with Entware.
-It embeds sing-box, routes router and LAN client traffic through a TUN
-interface, manages VLESS subscriptions, selects working servers, monitors
-tunnel health, and supports domain bypass rules.
+VLESS Manager — менеджер прозрачного VPN для Keenetic с Entware. Он направляет
+трафик самого роутера и устройств локальной сети через VLESS, управляет
+подписками, выбирает рабочий сервер, контролирует туннель и оставляет выбранные
+домены вне VPN.
 
-## Build
+![Главная страница VLESS Manager](docs/images/dashboard.jpg)
 
-The Keenetic MT7621 build uses Go 1.24.7 and the bundled sing-box source:
+## Возможности
+
+- прозрачный TUN-туннель для роутера и клиентов LAN;
+- встроенный официальный sing-box без отдельного процесса;
+- VLESS Reality/TLS с транспортами TCP, WebSocket, gRPC, HTTP/H2,
+  HTTP Upgrade и QUIC;
+- несколько подписок, приоритеты, отключение подписок и отдельных серверов;
+- проверка каждого включённого сервера реальным HTTP-запросом через туннель;
+- выбор быстрейшего узла в приоритетной подписке или среди всех подписок;
+- независимое автоматическое включение VPN при whitelist оператора;
+- независимый health-check и замена неработающего туннеля;
+- Bypass для российского списка и пользовательских доменов;
+- график общего, VPN- и Bypass-трафика в битах в секунду;
+- структурированный журнал manager и sing-box;
+- автономный IPK: `iptables` включён в пакет для установки без доступа к
+  репозиторию Entware.
+
+Подробное описание интерфейса, логики и диагностики:
+**[Руководство пользователя](docs/USER_GUIDE.md)**.
+
+## Требования
+
+- Keenetic OS с установленным Entware;
+- архитектура `mipsel-3.4` (проверенная платформа: MT7621);
+- интерфейс LAN `br0`;
+- Go `1.24.7` для сборки;
+- `sshpass`, если используется автоматическая установка из Makefile.
+
+Проект настроен под конкретную схему Keenetic/Entware. Установка на другую
+архитектуру или OpenWrt требует проверки имён интерфейсов и правил policy
+routing.
+
+## Сборка
 
 ```sh
 make ipk
 ```
 
-The package is written to `build/`.
+Готовый пакет появится в `build/`. В бинарник встраиваются WebUI и sing-box
+`v1.13.14`; отдельный пакет sing-box не требуется.
 
-## Install
+## Установка
 
-Pass router credentials through environment variables. They are intentionally
-not stored in the repository:
+Пароль роутера не хранится в репозитории и передаётся только при вызове:
 
 ```sh
 make install-ipk PASS='router-password'
 ```
 
-The default target is `root@192.168.201.1:222`. Override it when necessary:
+По умолчанию используется `root@192.168.201.1:222`. Другой адрес:
 
 ```sh
 make install-ipk \
@@ -33,10 +65,44 @@ make install-ipk \
   PASS='router-password'
 ```
 
-The web interface listens on port `3001`.
+После установки:
 
-## Source layout
+- WebUI: `http://router-address:3001`;
+- конфигурация: `/opt/etc/vless-manager/`;
+- журнал процесса: `/opt/var/log/vless-manager.log`;
+- управление сервисом:
 
-- `cmd/vless-manager/` - manager, API, routing and embedded web interface.
-- `singbox_src/` - pinned sing-box source used by the Go module replacement.
-- `packaging/` - Entware and OpenWrt package scripts.
+```sh
+/opt/etc/init.d/S99vless-manager status
+/opt/etc/init.d/S99vless-manager restart
+/opt/etc/init.d/S99vless-manager stop
+```
+
+## Разработка
+
+```sh
+GOCACHE="$PWD/.gocache" GOTOOLCHAIN=go1.24.7 \
+  go test -tags with_utls ./cmd/vless-manager
+```
+
+Основные каталоги:
+
+- `cmd/vless-manager/` — менеджер, API, маршрутизация и WebUI;
+- `singbox_src/` — зафиксированный исходный код sing-box;
+- `packaging/` — сборка пакетов Entware/OpenWrt и init-скрипты;
+- `docs/` — пользовательская документация.
+
+## Ограничения
+
+- XHTTP намеренно не поддерживается: используется официальный sing-box, а
+  XHTTP-узлы исключаются при разборе подписки.
+- TUN MTU зафиксирован на `1500`.
+- процесс ограничен тремя потоками Go и мягким лимитом памяти 50 MiB, чтобы
+  оставить ресурсы Keenetic OS;
+- UDP/443 блокируется в таблице маршрутизации, чтобы клиенты откатывались с
+  QUIC на TCP и не создавали чрезмерную нагрузку на роутер.
+
+## Безопасность
+
+Не коммитьте `config.json`, `subscriptions.json`, ссылки подписок, UUID и
+пароли роутера. Локальные runtime-файлы исключены через `.gitignore`.
