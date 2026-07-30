@@ -752,24 +752,14 @@ PKG=%s
 INIT=%s
 OPKG=%s
 LOG=%s
-BIN=/opt/bin/vless-manager
-BACKUP="${BIN}.previous"
-INIT_BACKUP="${INIT}.previous"
 echo "[$(date '+%%Y-%%m-%%d %%H:%%M:%%S')] installing $PKG via opkg" >>"$LOG"
-cp -p "$BIN" "$BACKUP" >>"$LOG" 2>&1
-cp -p "$INIT" "$INIT_BACKUP" >>"$LOG" 2>&1
 if "$OPKG" install --force-reinstall "$PKG" >>"$LOG" 2>&1; then
   sleep 4
   if "$INIT" status >>"$LOG" 2>&1; then
-    rm -f "$BACKUP" "$INIT_BACKUP" "$PKG" "$0"
+    rm -f "$PKG" "$0"
     exit 0
   fi
 fi
-"$INIT" stop >>"$LOG" 2>&1
-mv -f "$BACKUP" "$BIN"
-mv -f "$INIT_BACKUP" "$INIT"
-chmod 755 "$BIN"
-chmod 755 "$INIT"
 "$INIT" start >>"$LOG" 2>&1
 rm -f "$PKG" "$0"
 exit 1
