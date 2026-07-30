@@ -1702,13 +1702,11 @@ function renderAppUpdateAction() {
 function renderAppUpdateBadge() {
   const badge = document.getElementById('header-update');
   const text = document.getElementById('header-update-text');
-  const shortText = document.getElementById('header-update-short');
-  if (!badge || !text || !shortText) return;
+  if (!badge || !text) return;
   const available = !!appUpdateStatus?.available && !!appUpdateStatus?.latest_version;
   badge.hidden = !available;
   if (!available) return;
-  text.textContent = `Доступна v${appUpdateStatus.latest_version}`;
-  shortText.textContent = `v${appUpdateStatus.latest_version}`;
+  text.textContent = 'Доступно обновление';
   badge.title = `Открыть установку VLESS Manager v${appUpdateStatus.latest_version}`;
   badge.setAttribute('aria-label', badge.title);
 }

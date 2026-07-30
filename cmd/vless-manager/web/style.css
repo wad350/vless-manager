@@ -90,7 +90,6 @@ header .badge {
   box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.12);
 }
 .header-update-arrow { font-size: 14px; line-height: 1; }
-.header-update-short { display: none; }
 
 .tabs {
   display: flex;
@@ -625,12 +624,6 @@ header .badge {
   }
   .header-update-badge {
     padding: 5px 7px;
-  }
-  .header-update-badge #header-update-text {
-    display: none;
-  }
-  .header-update-short {
-    display: inline;
   }
   .connection-header { padding: 13px 12px; }
   .connection-state-mark,
