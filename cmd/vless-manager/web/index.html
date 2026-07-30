@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0f1117">
+<title>VLESS Manager</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+  <header>
+    <img class="brand-mark" src="favicon.svg" alt="">
+    <h1>VLESS Manager</h1>
+    <span class="badge" id="header-server">не подключён</span>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="status">Главная</div>
+    <div class="tab" data-tab="subscriptions">Подписки</div>
+    <div class="tab" data-tab="settings">Настройки</div>
+    <div class="tab" data-tab="logs">Логи</div>
+  </div>
+
+  <!-- ГЛАВНАЯ -->
+  <div class="panel active" id="tab-status">
+    <section class="connection-card" id="connection-card">
+      <div class="connection-header">
+        <div class="connection-state-mark">
+          <img src="favicon.svg" alt="">
+          <span class="connection-state-dot" id="vpn-dot"></span>
+        </div>
+        <div class="connection-heading">
+          <div class="connection-eyebrow">Состояние подключения</div>
+          <h2 id="vpn-status-text">Загрузка...</h2>
+          <p id="connection-subtitle">Получаю состояние сервиса</p>
+        </div>
+        <div class="connection-actions">
+          <button class="btn btn-success" id="btn-start">▶ Запустить VPN</button>
+          <button class="btn btn-danger" id="btn-stop">■ Остановить VPN</button>
+        </div>
+      </div>
+
+      <div class="active-connection">
+        <div class="active-server-header">
+          <div>
+            <span class="connection-eyebrow">Выбранный сервер</span>
+            <div class="active-server-name" id="active-server-name">Не выбран</div>
+          </div>
+          <span class="latency-pill unknown" id="active-server-latency">нет замера</span>
+        </div>
+        <div class="connection-facts">
+          <div class="connection-fact">
+            <span>Адрес</span>
+            <b id="active-server-endpoint">—</b>
+          </div>
+          <div class="connection-fact">
+            <span>Протокол</span>
+            <b id="active-server-protocol">—</b>
+          </div>
+          <div class="connection-fact">
+            <span>Источник</span>
+            <b id="active-server-source">—</b>
+          </div>
+          <div class="connection-fact">
+            <span>Время работы</span>
+            <b id="vpn-uptime">—</b>
+          </div>
+        </div>
+        <div class="connection-quota" id="connection-quota"></div>
+        <div class="connection-error" id="connection-error"></div>
+        <button class="btn btn-ghost btn-sm" id="btn-open-subscriptions">Сменить сервер</button>
+      </div>
+
+      <div class="connection-health">
+        <div class="health-cell" id="health-direct">
+          <span class="health-dot"></span>
+          <div><b>Прямой интернет</b><small>ожидание проверки</small></div>
+        </div>
+        <div class="health-cell" id="health-whitelist">
+          <span class="health-dot"></span>
+          <div><b>Whitelist оператора</b><small>ожидание проверки</small></div>
+        </div>
+        <div class="health-cell" id="health-tunnel">
+          <span class="health-dot"></span>
+          <div><b>VPN-туннель</b><small>не запущен</small></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="status-section failover-section">
+      <div class="status-section-header">
+        <div>
+          <h2>Автоматизация</h2>
+          <p>Управление подключением и контроль качества туннеля работают независимо.</p>
+        </div>
+      </div>
+      <div class="automation-controls">
+        <div class="automation-control">
+          <div>
+            <b>Автоматический обход белых списков</b>
+            <small>Включает VPN, когда оператор ограничивает доступ белым списком, и отключает его после восстановления свободного интернета.</small>
+          </div>
+          <label class="failover-switch">
+            <input type="checkbox" id="failover-toggle">
+            <span class="setting-switch-track" aria-hidden="true"></span>
+            <span id="failover-toggle-label">Включено</span>
+          </label>
+        </div>
+        <div class="automation-control">
+          <div>
+            <b>Контроль и смена туннеля</b>
+            <small>Проверяет любой запущенный VPN, включая ручной, и заменяет нерабочий сервер.</small>
+          </div>
+          <label class="failover-switch">
+            <input type="checkbox" id="tunnel-failover-toggle">
+            <span class="setting-switch-track" aria-hidden="true"></span>
+            <span id="tunnel-failover-toggle-label">Включено</span>
+          </label>
+        </div>
+      </div>
+      <div id="failover-verdict"></div>
+      <div id="failover-groups"></div>
+    </section>
+
+    <div class="status-grid">
+      <section class="status-section traffic-section">
+        <div class="status-section-header compact">
+          <div>
+            <h2>Трафик</h2>
+            <p id="traffic-subtitle">Роутер и подключённые устройства · <span id="traffic-interface">—</span></p>
+          </div>
+        </div>
+        <div class="traffic-toolbar">
+          <div class="traffic-mode-switch" role="group" aria-label="Источник трафика">
+            <button type="button" class="active" data-traffic-mode="all">Весь</button>
+            <button type="button" data-traffic-mode="vpn">VPN</button>
+            <button type="button" data-traffic-mode="bypass">Bypass</button>
+          </div>
+          <div class="traffic-rates">
+            <span class="download"><i aria-hidden="true"></i> Приём <b id="traffic-download-rate">0 B/s</b></span>
+            <span class="upload"><i aria-hidden="true"></i> Передача <b id="traffic-upload-rate">0 B/s</b></span>
+          </div>
+        </div>
+        <div class="traffic-chart-wrap">
+          <canvas id="traffic-chart" width="600" height="120"></canvas>
+          <div id="traffic-empty" class="traffic-empty" hidden>VPN выключен</div>
+        </div>
+        <div class="traffic-axis" aria-hidden="true">
+          <span id="traffic-time-start">—</span>
+          <span id="traffic-time-end">—</span>
+        </div>
+        <div class="traffic-totals">
+          <span>Получено <b id="traffic-download-total">0 B</b></span>
+          <span>Отправлено <b id="traffic-upload-total">0 B</b></span>
+        </div>
+      </section>
+
+      <section class="status-section routing-section">
+        <div class="status-section-header compact">
+          <div>
+            <h2>Маршрутизация</h2>
+            <p>Как обрабатывается трафик устройств</p>
+          </div>
+        </div>
+        <div class="routing-facts">
+          <div><span>Основной трафик</span><b id="routing-main-mode">—</b></div>
+          <div><span>Локальная сеть и DNS</span><b>Напрямую</b></div>
+          <div><span>Bypass-домены</span><b id="routing-bypass-count">—</b></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ПОДПИСКИ -->
+  <div class="panel" id="tab-subscriptions">
+    <div class="card">
+      <h2>Добавить подписку</h2>
+      <div class="subscription-add-form">
+        <div class="subscription-url-field">
+          <label>URL подписки</label>
+          <input type="text" id="sub-url" placeholder="https://...">
+        </div>
+        <div class="subscription-name-field">
+          <label>Название (необяз.)</label>
+          <input type="text" id="sub-name" placeholder="Мой VPN">
+        </div>
+        <button class="btn btn-primary" id="btn-add-sub">Добавить</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="subscription-toolbar">
+        <h2>Серверы</h2>
+        <button class="btn btn-ghost btn-sm" id="btn-ping-all">Тест пинга</button>
+        <button class="btn btn-success btn-sm" id="btn-auto-select">Авто-выбор</button>
+      </div>
+      <div id="ping-progress" class="ping-progress">
+        <div>
+          <span class="spinner"></span>
+          <span id="ping-progress-text">Тестирую...</span>
+        </div>
+      </div>
+      <div id="sub-list">
+        <div class="empty-state">Нет подписок. Добавьте URL выше.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- НАСТРОЙКИ -->
+  <div class="panel" id="tab-settings">
+    <div class="settings-page">
+      <div class="settings-page-header">
+        <div>
+          <h2>Настройки</h2>
+          <p>Обычно здесь ничего менять не нужно. Выберите нужный раздел.</p>
+        </div>
+      </div>
+      <div class="settings-workspace">
+        <nav class="settings-nav" id="settings-nav" aria-label="Разделы настроек"></nav>
+        <div class="settings-content" id="settings-form"></div>
+      </div>
+      <div class="settings-savebar">
+        <button class="btn btn-ghost btn-sm" id="btn-settings-cancel" hidden>Отменить изменения</button>
+        <span id="settings-save-state">Изменений нет</span>
+        <button class="btn btn-primary btn-sm" id="btn-settings-save" disabled>Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ЛОГИ -->
+  <div class="panel" id="tab-logs">
+    <div class="card logs-card">
+      <div class="logs-header">
+        <div>
+          <h2>Журнал событий</h2>
+          <p>Операции manager и sing-box с контекстом, длительностью и причиной ошибки.</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btn-clear-logs">Очистить экран</button>
+      </div>
+      <div class="logs-filters">
+        <select id="logs-level-filter" aria-label="Минимальный уровень">
+          <option value="TRACE">TRACE и выше</option>
+          <option value="DEBUG" selected>DEBUG и выше</option>
+          <option value="INFO">INFO и выше</option>
+          <option value="WARN">WARN и ERROR</option>
+          <option value="ERROR">Только ERROR</option>
+        </select>
+        <select id="logs-component-filter" aria-label="Компонент">
+          <option value="">Все компоненты</option>
+          <option value="manager">Manager</option>
+          <option value="network">Сеть / WAN</option>
+          <option value="bypass">Bypass</option>
+          <option value="failover">Failover</option>
+          <option value="ping">Проверка серверов</option>
+          <option value="subscription">Подписки</option>
+          <option value="priority">Приоритеты</option>
+          <option value="routing">Маршрутизация</option>
+          <option value="sing-box">sing-box</option>
+        </select>
+        <input id="logs-search" type="search" placeholder="Событие, сервер, ошибка или op_id" aria-label="Поиск по журналу">
+        <label class="logs-autoscroll">
+          <input type="checkbox" id="logs-autoscroll" checked>
+          <span>Автопрокрутка</span>
+        </label>
+      </div>
+      <div id="logs-output" role="log" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <footer class="app-footer">
+    <span id="footer-version">vless-manager</span>
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

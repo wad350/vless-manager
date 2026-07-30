@@ -1,0 +1,25 @@
+.DS_Store
+**/.DS_Store
+
+# Local tooling and caches
+.claude/
+.gocache/
+.env
+.env.*
+singbox_src/.git.upstream/
+
+# Build outputs
+build/
+/vless-manager
+/vless-manager-*
+
+# Obsolete experimental source tree; the build uses singbox_src.
+singbox_extended/
+
+# Runtime state and credentials
+data/
+config.json
+subscriptions.json
+device-id
+*.log
+*.pid
