@@ -1650,6 +1650,8 @@ function renderAppUpdateAction() {
     ? new Date(status.started_at).toLocaleTimeString('ru')
     : '—';
   const target = status.target_version || (status.available ? status.latest_version : '');
+  const upToDate = status.state === 'ready' && !status.available;
+  const successful = upToDate || status.state === 'complete';
 
   return `<div class="settings-action app-update">
     <div class="app-update-header">
@@ -1668,8 +1670,8 @@ function renderAppUpdateAction() {
         </button>` : ''}
       </div>
     </div>
-    <div class="app-update-verdict${status.state === 'complete' ? ' success' : ''}">
-      <span class="status-dot ${status.state === 'error' ? 'red' : status.state === 'complete' ? 'green' : busy ? 'blue pulse' : ''}"></span>
+    <div class="app-update-verdict${successful ? ' success' : ''}">
+      <span class="status-dot ${status.state === 'error' ? 'red' : successful ? 'green' : busy ? 'blue pulse' : ''}"></span>
       <span>${esc(verdict)}</span>
     </div>
     ${showProgress ? `<div class="app-update-progress">
