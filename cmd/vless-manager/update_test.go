@@ -111,12 +111,18 @@ func TestDownloadVerifiedBinary(t *testing.T) {
 	})}
 
 	destination := filepath.Join(t.TempDir(), "vless-manager.update")
+	var phases []string
 	err := downloadVerifiedBinary(
 		context.Background(),
 		client,
 		releaseAsset{Name: "binary", URL: "https://github.com/binary", Size: int64(len(binary))},
 		releaseAsset{Name: "binary.sha256", URL: "https://github.com/binary.sha256", Size: 74},
 		destination,
+		func(phase string, _, _ int64) {
+			if len(phases) == 0 || phases[len(phases)-1] != phase {
+				phases = append(phases, phase)
+			}
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -127,6 +133,31 @@ func TestDownloadVerifiedBinary(t *testing.T) {
 	}
 	if !bytes.Equal(got, binary) {
 		t.Fatal("downloaded binary differs")
+	}
+	wantPhases := []string{"checksum", "downloading", "verifying", "preparing"}
+	if fmt.Sprint(phases) != fmt.Sprint(wantPhases) {
+		t.Fatalf("progress phases=%v, want %v", phases, wantPhases)
+	}
+}
+
+func TestUpdateProgressWriterReportsBytes(t *testing.T) {
+	var destination bytes.Buffer
+	var reported int64
+	writer := &updateProgressWriter{
+		writer: &destination,
+		total:  6,
+		report: func(written, total int64) {
+			reported = written
+			if total != 6 {
+				t.Errorf("total=%d", total)
+			}
+		},
+	}
+	if _, err := writer.Write([]byte("router")); err != nil {
+		t.Fatal(err)
+	}
+	if destination.String() != "router" || reported != 6 {
+		t.Fatalf("destination=%q reported=%d", destination.String(), reported)
 	}
 }
 

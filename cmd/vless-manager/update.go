@@ -35,14 +35,22 @@ const (
 var versionPattern = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)$`)
 
 type UpdateStatus struct {
-	CurrentVersion string     `json:"current_version"`
-	LatestVersion  string     `json:"latest_version,omitempty"`
-	Available      bool       `json:"available"`
-	State          string     `json:"state"`
-	Transport      string     `json:"transport,omitempty"`
-	CheckedAt      *time.Time `json:"checked_at,omitempty"`
-	ReleaseURL     string     `json:"release_url,omitempty"`
-	Error          string     `json:"error,omitempty"`
+	CurrentVersion  string     `json:"current_version"`
+	LatestVersion   string     `json:"latest_version,omitempty"`
+	TargetVersion   string     `json:"target_version,omitempty"`
+	Available       bool       `json:"available"`
+	State           string     `json:"state"`
+	Message         string     `json:"message,omitempty"`
+	Progress        int        `json:"progress"`
+	DownloadedBytes int64      `json:"downloaded_bytes,omitempty"`
+	TotalBytes      int64      `json:"total_bytes,omitempty"`
+	BytesPerSecond  int64      `json:"bytes_per_second,omitempty"`
+	Transport       string     `json:"transport,omitempty"`
+	CheckedAt       *time.Time `json:"checked_at,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+	ReleaseURL      string     `json:"release_url,omitempty"`
+	Error           string     `json:"error,omitempty"`
 }
 
 type githubRelease struct {
@@ -97,8 +105,16 @@ func (u *appUpdater) begin(state string) bool {
 	if u.busy {
 		return false
 	}
+	now := time.Now()
 	u.busy = true
 	u.status.State = state
+	u.status.Message = updateStateMessage(state)
+	u.status.Progress = 2
+	u.status.DownloadedBytes = 0
+	u.status.TotalBytes = 0
+	u.status.BytesPerSecond = 0
+	u.status.StartedAt = &now
+	u.status.UpdatedAt = &now
 	u.status.Error = ""
 	return true
 }
@@ -107,8 +123,59 @@ func (u *appUpdater) finish(status UpdateStatus) {
 	u.mu.Lock()
 	u.busy = false
 	status.CurrentVersion = Version
+	now := time.Now()
+	status.UpdatedAt = &now
 	u.status = status
 	u.mu.Unlock()
+}
+
+func (u *appUpdater) updateStatus(update func(*UpdateStatus)) {
+	u.mu.Lock()
+	update(&u.status)
+	u.status.CurrentVersion = Version
+	now := time.Now()
+	u.status.UpdatedAt = &now
+	u.mu.Unlock()
+}
+
+func (u *appUpdater) setTransport(transport string) {
+	u.updateStatus(func(status *UpdateStatus) {
+		status.Transport = transport
+	})
+}
+
+func (u *appUpdater) setInstallProgress(
+	state, message string,
+	progress int,
+	downloaded, total, bytesPerSecond int64,
+) {
+	u.updateStatus(func(status *UpdateStatus) {
+		status.State = state
+		status.Message = message
+		status.Progress = progress
+		status.DownloadedBytes = downloaded
+		status.TotalBytes = total
+		status.BytesPerSecond = bytesPerSecond
+	})
+}
+
+func updateStateMessage(state string) string {
+	switch state {
+	case "checking":
+		return "Проверяем последний релиз"
+	case "checksum":
+		return "Получаем контрольную сумму"
+	case "downloading":
+		return "Скачиваем обновление"
+	case "verifying":
+		return "Проверяем целостность и архитектуру"
+	case "preparing":
+		return "Подготавливаем установку"
+	case "restarting":
+		return "Перезапускаем сервис"
+	default:
+		return ""
+	}
 }
 
 func (u *appUpdater) check(ctx context.Context) (UpdateStatus, error) {
@@ -158,6 +225,23 @@ func (u *appUpdater) install(ctx context.Context) (UpdateStatus, error) {
 	if !u.begin("downloading") {
 		return u.snapshot(), errors.New("обновление уже выполняется")
 	}
+	return u.installStarted(ctx)
+}
+
+func (u *appUpdater) startInstall() (UpdateStatus, error) {
+	if !u.begin("checking") {
+		return u.snapshot(), errors.New("обновление уже выполняется")
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), updateFetchTimeout)
+		defer cancel()
+		_, _ = u.installStarted(ctx)
+	}()
+	return u.snapshot(), nil
+}
+
+func (u *appUpdater) installStarted(ctx context.Context) (UpdateStatus, error) {
+	u.setInstallProgress("checking", updateStateMessage("checking"), 4, 0, 0, 0)
 
 	executable, err := os.Executable()
 	if err != nil {
@@ -170,6 +254,7 @@ func (u *appUpdater) install(ctx context.Context) (UpdateStatus, error) {
 	updatePath := executable + ".update"
 
 	var release githubRelease
+	var downloadStarted time.Time
 	transport, err := u.withPreferredTransport(ctx, updateFetchTimeout, func(client *http.Client) error {
 		var fetchErr error
 		release, fetchErr = fetchLatestRelease(ctx, client, githubReleaseAPIURL())
@@ -187,11 +272,46 @@ func (u *appUpdater) install(ctx context.Context) (UpdateStatus, error) {
 		if !available && Version != "dev" {
 			return fmt.Errorf("установлена актуальная версия %s", Version)
 		}
+		u.updateStatus(func(status *UpdateStatus) {
+			status.LatestVersion = latest
+			status.TargetVersion = latest
+			status.Available = true
+			status.ReleaseURL = release.HTMLURL
+		})
 		binary, checksum, assetErr := releaseAssets(release, latest)
 		if assetErr != nil {
 			return assetErr
 		}
-		return downloadVerifiedBinary(ctx, client, binary, checksum, updatePath)
+		return downloadVerifiedBinary(ctx, client, binary, checksum, updatePath,
+			func(phase string, downloaded, total int64) {
+				switch phase {
+				case "checksum":
+					u.setInstallProgress("checksum", updateStateMessage("checksum"), 8, 0, total, 0)
+				case "downloading":
+					if downloadStarted.IsZero() {
+						downloadStarted = time.Now()
+					}
+					progress := 10
+					if total > 0 {
+						progress += int(downloaded * 65 / total)
+					}
+					if progress > 75 {
+						progress = 75
+					}
+					var speed int64
+					if elapsed := time.Since(downloadStarted); elapsed > 0 {
+						speed = int64(float64(downloaded) / elapsed.Seconds())
+					}
+					u.setInstallProgress("downloading", updateStateMessage("downloading"),
+						progress, downloaded, total, speed)
+				case "verifying":
+					u.setInstallProgress("verifying", updateStateMessage("verifying"),
+						82, downloaded, total, 0)
+				case "preparing":
+					u.setInstallProgress("preparing", updateStateMessage("preparing"),
+						90, downloaded, total, 0)
+				}
+			})
 	})
 	if err != nil {
 		_ = os.Remove(updatePath)
@@ -205,13 +325,19 @@ func (u *appUpdater) install(ctx context.Context) (UpdateStatus, error) {
 	}
 	checkedAt := time.Now()
 	status := UpdateStatus{
-		CurrentVersion: Version,
-		LatestVersion:  latest,
-		Available:      true,
-		State:          "restarting",
-		Transport:      transport,
-		CheckedAt:      &checkedAt,
-		ReleaseURL:     release.HTMLURL,
+		CurrentVersion:  Version,
+		LatestVersion:   latest,
+		TargetVersion:   latest,
+		Available:       true,
+		State:           "restarting",
+		Message:         updateStateMessage("restarting"),
+		Progress:        96,
+		DownloadedBytes: u.snapshot().DownloadedBytes,
+		TotalBytes:      u.snapshot().TotalBytes,
+		Transport:       transport,
+		CheckedAt:       &checkedAt,
+		StartedAt:       u.snapshot().StartedAt,
+		ReleaseURL:      release.HTMLURL,
 	}
 	u.finish(status)
 	u.api.pm.event(serviceLogInfo, "update", "install.scheduled",
@@ -223,7 +349,19 @@ func (u *appUpdater) install(ctx context.Context) (UpdateStatus, error) {
 }
 
 func (u *appUpdater) failInstall(err error) (UpdateStatus, error) {
-	status := UpdateStatus{CurrentVersion: Version, State: "error", Error: err.Error()}
+	previous := u.snapshot()
+	status := UpdateStatus{
+		CurrentVersion: Version,
+		LatestVersion:  previous.LatestVersion,
+		TargetVersion:  previous.TargetVersion,
+		State:          "error",
+		Message:        "Обновление не установлено",
+		Progress:       previous.Progress,
+		Transport:      previous.Transport,
+		StartedAt:      previous.StartedAt,
+		ReleaseURL:     previous.ReleaseURL,
+		Error:          err.Error(),
+	}
 	u.finish(status)
 	u.api.pm.event(serviceLogError, "update", "install.failed",
 		"обновление приложения не установлено", field("error", err))
@@ -249,6 +387,7 @@ func (u *appUpdater) withPreferredTransport(
 	fn func(*http.Client) error,
 ) (string, error) {
 	if u.api.pm.Status().Running && u.api.pm.TunRunning() {
+		u.setTransport("vpn")
 		dialer, err := proxy.SOCKS5("tcp",
 			fmt.Sprintf("127.0.0.1:%d", socksHealthPort), nil, proxy.Direct)
 		if err == nil {
@@ -260,6 +399,7 @@ func (u *appUpdater) withPreferredTransport(
 				field("error", err))
 		}
 	}
+	u.setTransport("wan")
 	if err := fn(updateHTTPClient(timeout, wanDialer(timeout).Dial)); err != nil {
 		return "wan", err
 	}
@@ -353,7 +493,11 @@ func downloadVerifiedBinary(
 	binary releaseAsset,
 	checksum releaseAsset,
 	destination string,
+	progress func(phase string, downloaded, total int64),
 ) error {
+	if progress != nil {
+		progress("checksum", 0, binary.Size)
+	}
 	expected, err := fetchChecksum(ctx, client, checksum.URL)
 	if err != nil {
 		return err
@@ -379,7 +523,19 @@ func downloadVerifiedBinary(
 		return err
 	}
 	hash := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(file, hash), io.LimitReader(resp.Body, maxUpdateBytes+1))
+	if progress != nil {
+		progress("downloading", 0, binary.Size)
+	}
+	writer := &updateProgressWriter{
+		writer: io.MultiWriter(file, hash),
+		total:  binary.Size,
+		report: func(written, total int64) {
+			if progress != nil {
+				progress("downloading", written, total)
+			}
+		},
+	}
+	written, copyErr := io.Copy(writer, io.LimitReader(resp.Body, maxUpdateBytes+1))
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(tmp)
@@ -393,6 +549,9 @@ func downloadVerifiedBinary(
 		_ = os.Remove(tmp)
 		return errors.New("файл обновления превышает допустимый размер")
 	}
+	if progress != nil {
+		progress("verifying", written, binary.Size)
+	}
 	actual := hex.EncodeToString(hash.Sum(nil))
 	if !strings.EqualFold(actual, expected) {
 		_ = os.Remove(tmp)
@@ -402,8 +561,27 @@ func downloadVerifiedBinary(
 		_ = os.Remove(tmp)
 		return err
 	}
+	if progress != nil {
+		progress("preparing", written, binary.Size)
+	}
 	_ = os.Remove(destination)
 	return os.Rename(tmp, destination)
+}
+
+type updateProgressWriter struct {
+	writer  io.Writer
+	total   int64
+	written int64
+	report  func(written, total int64)
+}
+
+func (w *updateProgressWriter) Write(data []byte) (int, error) {
+	n, err := w.writer.Write(data)
+	w.written += int64(n)
+	if w.report != nil {
+		w.report(w.written, w.total)
+	}
+	return n, err
 }
 
 func fetchChecksum(ctx context.Context, client *http.Client, rawURL string) (string, error) {
@@ -568,9 +746,9 @@ func (s *apiServer) handleUpdateInstall(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	status, err := s.updater.install(r.Context())
+	status, err := s.updater.startInstall()
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeJSON(w, status)

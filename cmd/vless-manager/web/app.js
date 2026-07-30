@@ -1408,8 +1408,8 @@ const SETTINGS_SCHEMA = [
     description: 'Версия приложения и установка обновлений.',
     groups: [
       {
-        title: 'Обновление приложения',
-        description: 'Релизы загружаются из официального репозитория проекта.',
+        title: 'Центр обновления',
+        description: 'Проверка версии, безопасная загрузка и установка релизов проекта.',
         action: 'app-update',
         items: [],
       },
@@ -1472,6 +1472,8 @@ let settingsDraft = null;
 let settingsDefaults = null;
 let bypassStatus = null;
 let appUpdateStatus = null;
+let appUpdatePollTimer = null;
+let appUpdateRestartMonitor = false;
 let settingsActiveSection = 'vpn';
 
 async function loadSettings() {
@@ -1487,6 +1489,7 @@ async function loadSettings() {
     settingsDefaults = def;
     bypassStatus = bypass;
     appUpdateStatus = update;
+    resumeAppUpdateState();
     renderSettings();
     updateSettingsSavebar();
   } catch (e) {
@@ -1627,33 +1630,93 @@ function renderAppUpdateAction() {
   const transport = status.transport === 'vpn'
     ? 'через VPN'
     : status.transport === 'wan' ? 'напрямую' : 'выбирается автоматически';
-  const busy = status.state === 'checking' || status.state === 'downloading';
+  const busy = appUpdateIsBusy(status);
   const error = status.error
-    ? `<div class="app-update-error">${esc(status.error)}</div>`
+    ? `<div class="app-update-alert error"><b>Установка не завершена</b><span>${esc(status.error)}</span></div>`
     : '';
   let verdict = 'Нажмите «Проверить», чтобы узнать о новой версии.';
   if (status.state === 'ready' && status.available) verdict = `Доступна версия ${esc(latest)}.`;
   if (status.state === 'ready' && !status.available) verdict = 'Установлена актуальная версия.';
-  if (status.state === 'restarting') verdict = 'Обновление установлено. Сервис перезапускается.';
+  if (busy) verdict = status.message || 'Выполняется обновление.';
+  if (status.state === 'complete') verdict = `Версия ${esc(current)} успешно установлена.`;
+  if (status.state === 'error') verdict = status.message || 'Не удалось завершить операцию.';
+
+  const progress = Math.max(0, Math.min(100, Number(status.progress || 0)));
+  const showProgress = busy || status.state === 'complete' || status.state === 'error';
+  const downloaded = Number(status.downloaded_bytes || 0);
+  const total = Number(status.total_bytes || 0);
+  const speed = Number(status.bytes_per_second || 0);
+  const started = status.started_at
+    ? new Date(status.started_at).toLocaleTimeString('ru')
+    : '—';
+  const target = status.target_version || (status.available ? status.latest_version : '');
+
   return `<div class="settings-action app-update">
-    <div class="app-update-main">
+    <div class="app-update-header">
       <div class="app-update-versions">
-        <div><span>Установлена</span><b>v${esc(current)}</b></div>
-        <div><span>Последняя</span><b>${latest === 'ещё не проверялась' ? esc(latest) : `v${esc(latest)}`}</b></div>
+        <div><span>Установленная версия</span><b>v${esc(current)}</b></div>
+        <span class="app-update-version-arrow" aria-hidden="true">→</span>
+        <div><span>${status.available || busy ? 'Версия для установки' : 'Последний релиз'}</span><b>${latest === 'ещё не проверялась' ? esc(latest) : `v${esc(target || latest)}`}</b></div>
       </div>
-      <div class="hint">${esc(verdict)}</div>
-      <div class="app-update-meta">Проверено: ${esc(checked)} · Загрузка: ${esc(transport)}</div>
-      ${error}
+      <div class="app-update-actions">
+        ${status.release_url ? `<a class="btn btn-ghost btn-sm" href="${esc(status.release_url)}" target="_blank" rel="noopener">О релизе</a>` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="checkAppUpdate(this)" ${busy ? 'disabled' : ''}>
+          ${status.state === 'checking' ? '<span class="spinner"></span>' : 'Проверить'}
+        </button>
+        ${status.available ? `<button class="btn btn-primary btn-sm" onclick="installAppUpdate(this)" ${busy ? 'disabled' : ''}>
+          ${busy ? '<span class="spinner"></span> Выполняется' : 'Установить обновление'}
+        </button>` : ''}
+      </div>
     </div>
-    <div class="app-update-actions">
-      <button class="btn btn-ghost btn-sm" onclick="checkAppUpdate(this)" ${busy ? 'disabled' : ''}>
-        ${status.state === 'checking' ? '<span class="spinner"></span>' : 'Проверить'}
-      </button>
-      ${status.available ? `<button class="btn btn-primary btn-sm" onclick="installAppUpdate(this)" ${busy ? 'disabled' : ''}>
-        ${status.state === 'downloading' ? '<span class="spinner"></span>' : 'Обновить'}
-      </button>` : ''}
+    <div class="app-update-verdict${status.state === 'complete' ? ' success' : ''}">
+      <span class="status-dot ${status.state === 'error' ? 'red' : status.state === 'complete' ? 'green' : busy ? 'blue pulse' : ''}"></span>
+      <span>${esc(verdict)}</span>
     </div>
+    ${showProgress ? `<div class="app-update-progress">
+      <div class="app-update-progress-head"><span>${esc(status.message || verdict)}</span><b>${progress}%</b></div>
+      <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}">
+        <span style="width:${progress}%"></span>
+      </div>
+      ${renderAppUpdateStages(status.state)}
+    </div>` : ''}
+    <div class="app-update-facts">
+      <div><span>Источник</span><b>GitHub Releases</b></div>
+      <div><span>Маршрут</span><b>${esc(transport)}</b></div>
+      <div><span>${busy ? 'Начато' : 'Проверено'}</span><b>${esc(busy ? started : checked)}</b></div>
+      <div><span>Загружено</span><b>${total ? `${formatUpdateBytes(downloaded)} из ${formatUpdateBytes(total)}` : '—'}</b></div>
+      <div><span>Скорость</span><b>${speed ? `${formatUpdateBytes(speed)}/с` : '—'}</b></div>
+      <div><span>Защита</span><b>SHA-256 + проверка MIPS</b></div>
+    </div>
+    ${error}
   </div>`;
+}
+
+function appUpdateIsBusy(status = appUpdateStatus || {}) {
+  return ['checking', 'checksum', 'downloading', 'verifying', 'preparing', 'restarting'].includes(status.state);
+}
+
+function renderAppUpdateStages(state) {
+  const stages = [
+    ['checking', 'Релиз'],
+    ['checksum', 'Контрольная сумма'],
+    ['downloading', 'Загрузка'],
+    ['verifying', 'Проверка'],
+    ['preparing', 'Установка'],
+    ['restarting', 'Перезапуск'],
+  ];
+  const current = stages.findIndex(([id]) => id === state);
+  const complete = state === 'complete';
+  return `<ol class="app-update-stages">${stages.map(([id, label], index) => {
+    const stageState = complete || index < current ? 'done' : index === current ? 'active' : 'pending';
+    return `<li class="${stageState}"><span>${stageState === 'done' ? '✓' : index + 1}</span><b>${esc(label)}</b></li>`;
+  }).join('')}</ol>`;
+}
+
+function formatUpdateBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${Math.round(bytes)} Б`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
 }
 
 async function checkAppUpdate(btn) {
@@ -1678,14 +1741,110 @@ async function installAppUpdate(btn) {
   renderSettings();
   try {
     appUpdateStatus = await api('POST', '/update/install', {});
+    const target = appUpdateStatus.target_version || version;
+    sessionStorage.setItem('vless-manager-update-target', target);
     renderSettings();
-    toast('Обновление установлено. Сервис перезапускается.');
-    setTimeout(() => location.reload(), 9000);
+    pollAppUpdate();
   } catch (e) {
     appUpdateStatus = { ...(appUpdateStatus || {}), state: 'error', error: e.message };
     renderSettings();
     toast(e.message, 'err');
   }
+}
+
+function pollAppUpdate() {
+  clearTimeout(appUpdatePollTimer);
+  appUpdatePollTimer = setTimeout(async () => {
+    try {
+      appUpdateStatus = await api('GET', `/update?t=${Date.now()}`);
+      renderSettings();
+      if (appUpdateStatus.state === 'restarting') {
+        waitForAppUpdateRestart(appUpdateStatus.target_version || appUpdateStatus.latest_version);
+        return;
+      }
+      if (appUpdateIsBusy(appUpdateStatus)) {
+        pollAppUpdate();
+      }
+    } catch (e) {
+      if (appUpdateStatus?.state === 'restarting') {
+        waitForAppUpdateRestart(appUpdateStatus.target_version || appUpdateStatus.latest_version);
+      } else {
+        appUpdatePollTimer = setTimeout(pollAppUpdate, 1000);
+      }
+    }
+  }, 500);
+}
+
+async function waitForAppUpdateRestart(target) {
+  if (appUpdateRestartMonitor || !target) return;
+  appUpdateRestartMonitor = true;
+  clearTimeout(appUpdatePollTimer);
+  sessionStorage.setItem('vless-manager-update-target', target);
+  const deadline = Date.now() + 90000;
+  await new Promise(resolve => setTimeout(resolve, 2200));
+  while (Date.now() < deadline) {
+    try {
+      const version = await api('GET', `/version?t=${Date.now()}`);
+      if (version.manager === target) {
+        appUpdateStatus = {
+          ...(appUpdateStatus || {}),
+          current_version: version.manager,
+          latest_version: target,
+          target_version: target,
+          available: false,
+          state: 'complete',
+          message: 'Обновление установлено',
+          progress: 100,
+          error: '',
+        };
+        sessionStorage.removeItem('vless-manager-update-target');
+        appUpdateRestartMonitor = false;
+        renderSettings();
+        toast(`VLESS Manager обновлён до версии ${target}.`);
+        return;
+      }
+    } catch (_) {
+      appUpdateStatus = {
+        ...(appUpdateStatus || {}),
+        state: 'restarting',
+        message: 'Сервис перезапускается, ожидаем подключения',
+        progress: 98,
+      };
+      renderSettings();
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  appUpdateRestartMonitor = false;
+  sessionStorage.removeItem('vless-manager-update-target');
+  appUpdateStatus = {
+    ...(appUpdateStatus || {}),
+    state: 'error',
+    message: 'Не удалось подтвердить запуск новой версии',
+    error: 'Сервис не появился в сети после обновления. Проверьте журнал обновления.',
+  };
+  renderSettings();
+}
+
+function resumeAppUpdateState() {
+  const target = sessionStorage.getItem('vless-manager-update-target');
+  if (!target) {
+    if (appUpdateIsBusy(appUpdateStatus)) pollAppUpdate();
+    return;
+  }
+  if (appUpdateStatus?.current_version === target) {
+    appUpdateStatus = {
+      ...(appUpdateStatus || {}),
+      latest_version: target,
+      target_version: target,
+      available: false,
+      state: 'complete',
+      message: 'Обновление установлено',
+      progress: 100,
+    };
+    sessionStorage.removeItem('vless-manager-update-target');
+    return;
+  }
+  waitForAppUpdateRestart(target);
 }
 
 async function refreshBypassList(btn) {
