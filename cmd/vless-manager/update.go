@@ -1,10 +1,12 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -243,15 +245,7 @@ func (u *appUpdater) startInstall() (UpdateStatus, error) {
 func (u *appUpdater) installStarted(ctx context.Context) (UpdateStatus, error) {
 	u.setInstallProgress("checking", updateStateMessage("checking"), 4, 0, 0, 0)
 
-	executable, err := os.Executable()
-	if err != nil {
-		return u.failInstall(err)
-	}
-	executable, err = filepath.EvalSymlinks(executable)
-	if err != nil {
-		return u.failInstall(err)
-	}
-	updatePath := executable + ".update"
+	updatePath := filepath.Join(os.TempDir(), "vless-manager-update.ipk")
 
 	var release githubRelease
 	var downloadStarted time.Time
@@ -278,11 +272,11 @@ func (u *appUpdater) installStarted(ctx context.Context) (UpdateStatus, error) {
 			status.Available = true
 			status.ReleaseURL = release.HTMLURL
 		})
-		binary, checksum, assetErr := releaseAssets(release, latest)
+		pkg, checksum, assetErr := releaseAssets(release, latest)
 		if assetErr != nil {
 			return assetErr
 		}
-		return downloadVerifiedBinary(ctx, client, binary, checksum, updatePath,
+		return downloadVerifiedPackage(ctx, client, pkg, checksum, latest, updatePath,
 			func(phase string, downloaded, total int64) {
 				switch phase {
 				case "checksum":
@@ -319,7 +313,7 @@ func (u *appUpdater) installStarted(ctx context.Context) (UpdateStatus, error) {
 	}
 
 	latest, _ := normalizedVersion(release.TagName)
-	if err := scheduleBinaryUpdate(executable, updatePath); err != nil {
+	if err := schedulePackageUpdate(updatePath); err != nil {
 		_ = os.Remove(updatePath)
 		return u.failInstall(err)
 	}
@@ -446,32 +440,32 @@ func fetchLatestRelease(ctx context.Context, client *http.Client, endpoint strin
 }
 
 func releaseAssets(release githubRelease, version string) (releaseAsset, releaseAsset, error) {
-	binaryName := "vless-manager_" + version + "_linux_mipsle_softfloat"
-	checksumName := binaryName + ".sha256"
-	var binary, checksum releaseAsset
+	packageName := "vless-manager_" + version + "_mipsel-3.4.ipk"
+	checksumName := packageName + ".sha256"
+	var pkg, checksum releaseAsset
 	for _, asset := range release.Assets {
 		candidate := releaseAsset{Name: asset.Name, URL: asset.BrowserDownloadURL, Size: asset.Size}
 		switch asset.Name {
-		case binaryName:
-			binary = candidate
+		case packageName:
+			pkg = candidate
 		case checksumName:
 			checksum = candidate
 		}
 	}
-	if binary.URL == "" || checksum.URL == "" {
+	if pkg.URL == "" || checksum.URL == "" {
 		return releaseAsset{}, releaseAsset{}, fmt.Errorf(
-			"в релизе %s отсутствуют %s или его SHA-256", release.TagName, binaryName)
+			"в релизе %s отсутствуют %s или его SHA-256", release.TagName, packageName)
 	}
-	if binary.Size <= 0 || binary.Size > maxUpdateBytes {
-		return releaseAsset{}, releaseAsset{}, fmt.Errorf("недопустимый размер обновления: %d", binary.Size)
+	if pkg.Size <= 0 || pkg.Size > maxUpdateBytes {
+		return releaseAsset{}, releaseAsset{}, fmt.Errorf("недопустимый размер обновления: %d", pkg.Size)
 	}
-	if err := validateGitHubAssetURL(binary.URL); err != nil {
+	if err := validateGitHubAssetURL(pkg.URL); err != nil {
 		return releaseAsset{}, releaseAsset{}, err
 	}
 	if err := validateGitHubAssetURL(checksum.URL); err != nil {
 		return releaseAsset{}, releaseAsset{}, err
 	}
-	return binary, checksum, nil
+	return pkg, checksum, nil
 }
 
 func validateGitHubAssetURL(raw string) error {
@@ -487,22 +481,23 @@ func validateGitHubAssetURL(raw string) error {
 	return nil
 }
 
-func downloadVerifiedBinary(
+func downloadVerifiedPackage(
 	ctx context.Context,
 	client *http.Client,
-	binary releaseAsset,
+	pkg releaseAsset,
 	checksum releaseAsset,
+	version string,
 	destination string,
 	progress func(phase string, downloaded, total int64),
 ) error {
 	if progress != nil {
-		progress("checksum", 0, binary.Size)
+		progress("checksum", 0, pkg.Size)
 	}
 	expected, err := fetchChecksum(ctx, client, checksum.URL)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binary.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pkg.URL, nil)
 	if err != nil {
 		return err
 	}
@@ -524,11 +519,11 @@ func downloadVerifiedBinary(
 	}
 	hash := sha256.New()
 	if progress != nil {
-		progress("downloading", 0, binary.Size)
+		progress("downloading", 0, pkg.Size)
 	}
 	writer := &updateProgressWriter{
 		writer: io.MultiWriter(file, hash),
-		total:  binary.Size,
+		total:  pkg.Size,
 		report: func(written, total int64) {
 			if progress != nil {
 				progress("downloading", written, total)
@@ -550,19 +545,19 @@ func downloadVerifiedBinary(
 		return errors.New("файл обновления превышает допустимый размер")
 	}
 	if progress != nil {
-		progress("verifying", written, binary.Size)
+		progress("verifying", written, pkg.Size)
 	}
 	actual := hex.EncodeToString(hash.Sum(nil))
 	if !strings.EqualFold(actual, expected) {
 		_ = os.Remove(tmp)
 		return errors.New("SHA-256 обновления не совпадает")
 	}
-	if err := validateMIPSELF(tmp); err != nil {
+	if err := validateIPK(tmp, version); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
 	if progress != nil {
-		progress("preparing", written, binary.Size)
+		progress("preparing", written, pkg.Size)
 	}
 	_ = os.Remove(destination)
 	return os.Rename(tmp, destination)
@@ -612,49 +607,173 @@ func fetchChecksum(ctx context.Context, client *http.Client, rawURL string) (str
 	return strings.ToLower(value[0]), nil
 }
 
-func validateMIPSELF(path string) error {
-	file, err := elf.Open(path)
+func validateIPK(path, version string) error {
+	file, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("обновление не является ELF-файлом: %w", err)
+		return fmt.Errorf("не удалось открыть IPK: %w", err)
 	}
 	defer file.Close()
-	if file.Machine != elf.EM_MIPS || file.Class != elf.ELFCLASS32 || file.Data != elf.ELFDATA2LSB {
-		return fmt.Errorf("неподходящая архитектура обновления: machine=%s class=%s data=%s",
-			file.Machine, file.Class, file.Data)
+	gzipReader, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("обновление не является IPK: %w", err)
+	}
+	defer gzipReader.Close()
+
+	var debianBinary, controlOK, managerBinary bool
+	outer := tar.NewReader(gzipReader)
+	for {
+		header, nextErr := outer.Next()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			return fmt.Errorf("некорректный IPK: %w", nextErr)
+		}
+		switch strings.TrimPrefix(header.Name, "./") {
+		case "debian-binary":
+			data, readErr := io.ReadAll(io.LimitReader(outer, 16))
+			if readErr != nil {
+				return fmt.Errorf("чтение версии IPK: %w", readErr)
+			}
+			debianBinary = string(data) == "2.0\n"
+		case "control.tar.gz":
+			controlOK, err = validateIPKControl(outer, version)
+			if err != nil {
+				return err
+			}
+		case "data.tar.gz":
+			managerBinary, err = validateIPKData(outer)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if !debianBinary || !controlOK || !managerBinary {
+		return fmt.Errorf("IPK не прошёл проверку: format=%v metadata=%v binary=%v",
+			debianBinary, controlOK, managerBinary)
 	}
 	return nil
 }
 
-func scheduleBinaryUpdate(executable, updatePath string) error {
+func validateIPKControl(reader io.Reader, version string) (bool, error) {
+	gzipReader, err := gzip.NewReader(reader)
+	if err != nil {
+		return false, fmt.Errorf("некорректный control.tar.gz: %w", err)
+	}
+	defer gzipReader.Close()
+	archive := tar.NewReader(gzipReader)
+	for {
+		header, nextErr := archive.Next()
+		if errors.Is(nextErr, io.EOF) {
+			return false, nil
+		}
+		if nextErr != nil {
+			return false, fmt.Errorf("чтение control.tar.gz: %w", nextErr)
+		}
+		if strings.TrimPrefix(header.Name, "./") != "control" {
+			continue
+		}
+		data, readErr := io.ReadAll(io.LimitReader(archive, 64<<10))
+		if readErr != nil {
+			return false, fmt.Errorf("чтение метаданных IPK: %w", readErr)
+		}
+		fields := parsePackageControl(data)
+		if fields["Package"] != "vless-manager" ||
+			fields["Version"] != version ||
+			fields["Architecture"] != "mipsel-3.4" {
+			return false, fmt.Errorf(
+				"неподходящий IPK: package=%q version=%q architecture=%q",
+				fields["Package"], fields["Version"], fields["Architecture"])
+		}
+		return true, nil
+	}
+}
+
+func parsePackageControl(data []byte) map[string]string {
+	fields := make(map[string]string)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := scanner.Text()
+		name, value, found := strings.Cut(line, ":")
+		if found && !strings.HasPrefix(line, " ") {
+			fields[strings.TrimSpace(name)] = strings.TrimSpace(value)
+		}
+	}
+	return fields
+}
+
+func validateIPKData(reader io.Reader) (bool, error) {
+	gzipReader, err := gzip.NewReader(reader)
+	if err != nil {
+		return false, fmt.Errorf("некорректный data.tar.gz: %w", err)
+	}
+	defer gzipReader.Close()
+	archive := tar.NewReader(gzipReader)
+	for {
+		header, nextErr := archive.Next()
+		if errors.Is(nextErr, io.EOF) {
+			return false, nil
+		}
+		if nextErr != nil {
+			return false, fmt.Errorf("чтение data.tar.gz: %w", nextErr)
+		}
+		if strings.TrimPrefix(header.Name, "./") != "opt/bin/vless-manager" {
+			continue
+		}
+		elfHeader := make([]byte, 20)
+		if _, err := io.ReadFull(archive, elfHeader); err != nil {
+			return false, fmt.Errorf("бинарник в IPK повреждён: %w", err)
+		}
+		if !bytes.Equal(elfHeader[:4], []byte{0x7f, 'E', 'L', 'F'}) ||
+			elfHeader[4] != 1 ||
+			elfHeader[5] != 1 ||
+			elfHeader[18] != 8 ||
+			elfHeader[19] != 0 {
+			return false, errors.New("бинарник в IPK не является MIPSLE ELF32")
+		}
+		return true, nil
+	}
+}
+
+func schedulePackageUpdate(updatePath string) error {
 	initScript := "/opt/etc/init.d/S99vless-manager"
 	if _, err := os.Stat(initScript); err != nil {
 		return fmt.Errorf("init-скрипт не найден: %w", err)
+	}
+	opkgPath := "/opt/bin/opkg"
+	if _, err := os.Stat(opkgPath); err != nil {
+		return fmt.Errorf("opkg не найден: %w", err)
 	}
 	scriptPath := "/tmp/vless-manager-apply-update.sh"
 	logPath := "/opt/var/log/vless-manager-update.log"
 	script := fmt.Sprintf(`#!/bin/sh
 sleep 2
-BIN=%s
-NEW=%s
+PKG=%s
 INIT=%s
+OPKG=%s
 LOG=%s
+BIN=/opt/bin/vless-manager
 BACKUP="${BIN}.previous"
-"$INIT" stop >>"$LOG" 2>&1
+INIT_BACKUP="${INIT}.previous"
+echo "[$(date '+%%Y-%%m-%%d %%H:%%M:%%S')] installing $PKG via opkg" >>"$LOG"
 cp -p "$BIN" "$BACKUP" >>"$LOG" 2>&1
-if mv -f "$NEW" "$BIN" && chmod 755 "$BIN"; then
-  "$INIT" start >>"$LOG" 2>&1
+cp -p "$INIT" "$INIT_BACKUP" >>"$LOG" 2>&1
+if "$OPKG" install --force-reinstall "$PKG" >>"$LOG" 2>&1; then
   sleep 4
   if "$INIT" status >>"$LOG" 2>&1; then
-    rm -f "$BACKUP" "$0"
+    rm -f "$BACKUP" "$INIT_BACKUP" "$PKG" "$0"
     exit 0
   fi
 fi
+"$INIT" stop >>"$LOG" 2>&1
 mv -f "$BACKUP" "$BIN"
+mv -f "$INIT_BACKUP" "$INIT"
 chmod 755 "$BIN"
+chmod 755 "$INIT"
 "$INIT" start >>"$LOG" 2>&1
-rm -f "$NEW" "$0"
+rm -f "$PKG" "$0"
 exit 1
-`, shellQuote(executable), shellQuote(updatePath), shellQuote(initScript), shellQuote(logPath))
+`, shellQuote(updatePath), shellQuote(initScript), shellQuote(opkgPath), shellQuote(logPath))
 	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
 		return err
 	}

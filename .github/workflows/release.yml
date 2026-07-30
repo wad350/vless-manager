@@ -37,22 +37,19 @@ jobs:
       - name: Test
         run: go test -tags with_utls ./cmd/vless-manager
 
-      - name: Build binary and IPK
+      - name: Build IPK
         run: make ipk VERSION="$VERSION"
 
       - name: Prepare release assets
         shell: bash
         run: |
           mkdir -p dist
-          binary="vless-manager_${VERSION}_linux_mipsle_softfloat"
           ipk="vless-manager_${VERSION}_mipsel-3.4.ipk"
-          cp build/vless-manager "dist/$binary"
           cp "build/$ipk" "dist/$ipk"
           (
             cd dist
-            sha256sum "$binary" > "$binary.sha256"
             sha256sum "$ipk" > "$ipk.sha256"
-            sha256sum "$binary" "$ipk" > checksums.txt
+            sha256sum "$ipk" > checksums.txt
           )
 
       - name: Publish GitHub Release

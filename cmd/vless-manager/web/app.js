@@ -1685,7 +1685,7 @@ function renderAppUpdateAction() {
       <div><span>${busy ? 'Начато' : 'Проверено'}</span><b>${esc(busy ? started : checked)}</b></div>
       <div><span>Загружено</span><b>${total ? `${formatUpdateBytes(downloaded)} из ${formatUpdateBytes(total)}` : '—'}</b></div>
       <div><span>Скорость</span><b>${speed ? `${formatUpdateBytes(speed)}/с` : '—'}</b></div>
-      <div><span>Защита</span><b>SHA-256 + проверка MIPS</b></div>
+      <div><span>Защита</span><b>SHA-256 + проверка IPK</b></div>
     </div>
     ${error}
   </div>`;

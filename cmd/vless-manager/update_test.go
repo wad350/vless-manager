@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -66,22 +68,22 @@ func TestReleaseAssetsRequireBinaryAndChecksum(t *testing.T) {
 	release := githubRelease{TagName: "v1.15.0"}
 	release.Assets = append(release.Assets,
 		githubAsset{
-			Name:               "vless-manager_1.15.0_linux_mipsle_softfloat",
-			BrowserDownloadURL: "https://github.com/wad350/vless-manager/releases/download/v1.15.0/vless-manager",
+			Name:               "vless-manager_1.15.0_mipsel-3.4.ipk",
+			BrowserDownloadURL: "https://github.com/wad350/vless-manager/releases/download/v1.15.0/vless-manager.ipk",
 			Size:               32 << 20,
 		},
 		githubAsset{
-			Name:               "vless-manager_1.15.0_linux_mipsle_softfloat.sha256",
-			BrowserDownloadURL: "https://github.com/wad350/vless-manager/releases/download/v1.15.0/vless-manager.sha256",
+			Name:               "vless-manager_1.15.0_mipsel-3.4.ipk.sha256",
+			BrowserDownloadURL: "https://github.com/wad350/vless-manager/releases/download/v1.15.0/vless-manager.ipk.sha256",
 			Size:               100,
 		},
 	)
-	binary, checksum, err := releaseAssets(release, "1.15.0")
+	pkg, checksum, err := releaseAssets(release, "1.15.0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if binary.Size != 32<<20 || checksum.URL == "" {
-		t.Fatalf("binary=%+v checksum=%+v", binary, checksum)
+	if pkg.Size != 32<<20 || checksum.URL == "" {
+		t.Fatalf("pkg=%+v checksum=%+v", pkg, checksum)
 	}
 
 	release.Assets = release.Assets[:1]
@@ -90,16 +92,16 @@ func TestReleaseAssetsRequireBinaryAndChecksum(t *testing.T) {
 	}
 }
 
-func TestDownloadVerifiedBinary(t *testing.T) {
-	binary := minimalMIPSELF()
-	sum := sha256.Sum256(binary)
+func TestDownloadVerifiedPackage(t *testing.T) {
+	pkg := minimalIPK(t, "1.15.0")
+	sum := sha256.Sum256(pkg)
 	client := &http.Client{Transport: updateRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body []byte
 		switch req.URL.Path {
-		case "/binary":
-			body = binary
-		case "/binary.sha256":
-			body = []byte(fmt.Sprintf("%x  binary\n", sum))
+		case "/package.ipk":
+			body = pkg
+		case "/package.ipk.sha256":
+			body = []byte(fmt.Sprintf("%x  package.ipk\n", sum))
 		default:
 			return nil, fmt.Errorf("unexpected path %s", req.URL.Path)
 		}
@@ -110,13 +112,14 @@ func TestDownloadVerifiedBinary(t *testing.T) {
 		}, nil
 	})}
 
-	destination := filepath.Join(t.TempDir(), "vless-manager.update")
+	destination := filepath.Join(t.TempDir(), "vless-manager.ipk")
 	var phases []string
-	err := downloadVerifiedBinary(
+	err := downloadVerifiedPackage(
 		context.Background(),
 		client,
-		releaseAsset{Name: "binary", URL: "https://github.com/binary", Size: int64(len(binary))},
-		releaseAsset{Name: "binary.sha256", URL: "https://github.com/binary.sha256", Size: 74},
+		releaseAsset{Name: "package.ipk", URL: "https://github.com/package.ipk", Size: int64(len(pkg))},
+		releaseAsset{Name: "package.ipk.sha256", URL: "https://github.com/package.ipk.sha256", Size: 74},
+		"1.15.0",
 		destination,
 		func(phase string, _, _ int64) {
 			if len(phases) == 0 || phases[len(phases)-1] != phase {
@@ -131,8 +134,8 @@ func TestDownloadVerifiedBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got, binary) {
-		t.Fatal("downloaded binary differs")
+	if !bytes.Equal(got, pkg) {
+		t.Fatal("downloaded package differs")
 	}
 	wantPhases := []string{"checksum", "downloading", "verifying", "preparing"}
 	if fmt.Sprint(phases) != fmt.Sprint(wantPhases) {
@@ -161,6 +164,27 @@ func TestUpdateProgressWriterReportsBytes(t *testing.T) {
 	}
 }
 
+func TestValidateIPKRejectsWrongMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wrong.ipk")
+	if err := os.WriteFile(path, minimalIPK(t, "9.9.9"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateIPK(path, "1.15.2"); err == nil {
+		t.Fatal("IPK with wrong version accepted")
+	}
+}
+
+func TestValidateBuiltIPK(t *testing.T) {
+	path := os.Getenv("VLESS_MANAGER_TEST_IPK")
+	version := os.Getenv("VLESS_MANAGER_TEST_IPK_VERSION")
+	if path == "" || version == "" {
+		t.Skip("VLESS_MANAGER_TEST_IPK is not set")
+	}
+	if err := validateIPK(path, version); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type updateRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn updateRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -179,4 +203,46 @@ func minimalMIPSELF() []byte {
 	data[40] = byte(52)
 	data[46] = byte(40)
 	return data
+}
+
+func minimalIPK(t *testing.T, version string) []byte {
+	t.Helper()
+	control := []byte(fmt.Sprintf(
+		"Package: vless-manager\nVersion: %s\nArchitecture: mipsel-3.4\n", version))
+	controlArchive := testTarGzip(t, map[string][]byte{"./control": control})
+	dataArchive := testTarGzip(t, map[string][]byte{
+		"opt/bin/vless-manager": minimalMIPSELF(),
+	})
+	return testTarGzip(t, map[string][]byte{
+		"debian-binary":  []byte("2.0\n"),
+		"control.tar.gz": controlArchive,
+		"data.tar.gz":    dataArchive,
+	})
+}
+
+func testTarGzip(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	gzipWriter := gzip.NewWriter(&output)
+	archive := tar.NewWriter(gzipWriter)
+	for name, data := range files {
+		header := &tar.Header{
+			Name: name,
+			Mode: 0644,
+			Size: int64(len(data)),
+		}
+		if err := archive.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := archive.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
 }
