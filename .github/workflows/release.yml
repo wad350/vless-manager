@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.24.7'
+          cache-dependency-path: |
+            go.sum
+            singbox_src/go.sum
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          make_version="$(awk '/^VERSION[[:space:]]*:=/ { print $3; exit }' Makefile)"
+          if [[ "$version" != "$make_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match Makefile VERSION=$make_version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: go test -tags with_utls ./cmd/vless-manager
+
+      - name: Build binary and IPK
+        run: make ipk VERSION="$VERSION"
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          mkdir -p dist
+          binary="vless-manager_${VERSION}_linux_mipsle_softfloat"
+          ipk="vless-manager_${VERSION}_mipsel-3.4.ipk"
+          cp build/vless-manager "dist/$binary"
+          cp "build/$ipk" "dist/$ipk"
+          (
+            cd dist
+            sha256sum "$binary" > "$binary.sha256"
+            sha256sum "$ipk" > "$ipk.sha256"
+            sha256sum "$binary" "$ipk" > checksums.txt
+          )
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --generate-notes \
+            --title "VLESS Manager $GITHUB_REF_NAME"

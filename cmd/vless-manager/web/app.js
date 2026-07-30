@@ -1403,6 +1403,19 @@ const SETTINGS_SCHEMA = [
     ],
   },
   {
+    id: 'system',
+    title: 'Система',
+    description: 'Версия приложения и установка обновлений.',
+    groups: [
+      {
+        title: 'Обновление приложения',
+        description: 'Релизы загружаются из официального репозитория проекта.',
+        action: 'app-update',
+        items: [],
+      },
+    ],
+  },
+  {
     id: 'expert',
     title: 'Дополнительно',
     description: 'Служебные параметры. Обычно их менять не требуется.',
@@ -1458,19 +1471,22 @@ let settingsCurrent = null;
 let settingsDraft = null;
 let settingsDefaults = null;
 let bypassStatus = null;
+let appUpdateStatus = null;
 let settingsActiveSection = 'vpn';
 
 async function loadSettings() {
   try {
-    const [cur, def, bypass] = await Promise.all([
+    const [cur, def, bypass, update] = await Promise.all([
       api('GET', '/settings'),
       api('GET', '/settings/defaults'),
       api('GET', '/bypass'),
+      api('GET', '/update'),
     ]);
     settingsCurrent = cur;
     settingsDraft = structuredClone(cur);
     settingsDefaults = def;
     bypassStatus = bypass;
+    appUpdateStatus = update;
     renderSettings();
     updateSettingsSavebar();
   } catch (e) {
@@ -1513,6 +1529,8 @@ function settingsSectionSummary(section) {
     return bypassStatus ? `${bypassStatus.effective_count ?? bypassStatus.count ?? 0} доменов` : '—';
   case 'logs':
     return String(settingsDraft?.service_log_level || '—').toUpperCase();
+  case 'system':
+    return appUpdateStatus?.current_version ? `v${appUpdateStatus.current_version}` : 'версия';
   case 'expert':
     return 'служебные параметры';
   default:
@@ -1546,13 +1564,14 @@ function renderSettings() {
   renderSettingsNav();
 
   const section = SETTINGS_SCHEMA.find(candidate => candidate.id === settingsActiveSection) || SETTINGS_SCHEMA[0];
+  const hasSettings = settingsSectionItems(section).length > 0;
   root.innerHTML = `
     <div class="settings-content-header">
       <div>
         <h3>${esc(section.title)}</h3>
         <p>${esc(section.description)}</p>
       </div>
-      <button type="button" class="btn btn-ghost btn-sm" onclick="resetActiveSettingsSection()">По умолчанию</button>
+      ${hasSettings ? '<button type="button" class="btn btn-ghost btn-sm" onclick="resetActiveSettingsSection()">По умолчанию</button>' : ''}
     </div>
     ${section.groups.map(renderSettingsGroup).join('')}
   `;
@@ -1579,6 +1598,7 @@ function settingIsVisible(item) {
 }
 
 function renderSettingsAction(action) {
+  if (action === 'app-update') return renderAppUpdateAction();
   if (action !== 'bypass-refresh') return '';
   const updated = bypassStatus?.cached && bypassStatus.updated_at
     ? new Date(bypassStatus.updated_at).toLocaleString('ru')
@@ -1595,6 +1615,77 @@ function renderSettingsAction(action) {
     </div>
     <button class="btn btn-ghost btn-sm" onclick="refreshBypassList(this)">Обновить</button>
   </div>`;
+}
+
+function renderAppUpdateAction() {
+  const status = appUpdateStatus || {};
+  const current = status.current_version || '—';
+  const latest = status.latest_version || 'ещё не проверялась';
+  const checked = status.checked_at
+    ? new Date(status.checked_at).toLocaleString('ru')
+    : 'не проверялось';
+  const transport = status.transport === 'vpn'
+    ? 'через VPN'
+    : status.transport === 'wan' ? 'напрямую' : 'выбирается автоматически';
+  const busy = status.state === 'checking' || status.state === 'downloading';
+  const error = status.error
+    ? `<div class="app-update-error">${esc(status.error)}</div>`
+    : '';
+  let verdict = 'Нажмите «Проверить», чтобы узнать о новой версии.';
+  if (status.state === 'ready' && status.available) verdict = `Доступна версия ${esc(latest)}.`;
+  if (status.state === 'ready' && !status.available) verdict = 'Установлена актуальная версия.';
+  if (status.state === 'restarting') verdict = 'Обновление установлено. Сервис перезапускается.';
+  return `<div class="settings-action app-update">
+    <div class="app-update-main">
+      <div class="app-update-versions">
+        <div><span>Установлена</span><b>v${esc(current)}</b></div>
+        <div><span>Последняя</span><b>${latest === 'ещё не проверялась' ? esc(latest) : `v${esc(latest)}`}</b></div>
+      </div>
+      <div class="hint">${esc(verdict)}</div>
+      <div class="app-update-meta">Проверено: ${esc(checked)} · Загрузка: ${esc(transport)}</div>
+      ${error}
+    </div>
+    <div class="app-update-actions">
+      <button class="btn btn-ghost btn-sm" onclick="checkAppUpdate(this)" ${busy ? 'disabled' : ''}>
+        ${status.state === 'checking' ? '<span class="spinner"></span>' : 'Проверить'}
+      </button>
+      ${status.available ? `<button class="btn btn-primary btn-sm" onclick="installAppUpdate(this)" ${busy ? 'disabled' : ''}>
+        ${status.state === 'downloading' ? '<span class="spinner"></span>' : 'Обновить'}
+      </button>` : ''}
+    </div>
+  </div>`;
+}
+
+async function checkAppUpdate(btn) {
+  btn.disabled = true;
+  appUpdateStatus = { ...(appUpdateStatus || {}), state: 'checking', error: '' };
+  renderSettings();
+  try {
+    appUpdateStatus = await api('POST', '/update/check', {});
+    renderSettings();
+  } catch (e) {
+    appUpdateStatus = { ...(appUpdateStatus || {}), state: 'error', error: e.message };
+    renderSettings();
+    toast(e.message, 'err');
+  }
+}
+
+async function installAppUpdate(btn) {
+  const version = appUpdateStatus?.latest_version || 'новую версию';
+  if (!confirm(`Установить ${version}? VPN-соединение кратковременно прервётся.`)) return;
+  btn.disabled = true;
+  appUpdateStatus = { ...(appUpdateStatus || {}), state: 'downloading', error: '' };
+  renderSettings();
+  try {
+    appUpdateStatus = await api('POST', '/update/install', {});
+    renderSettings();
+    toast('Обновление установлено. Сервис перезапускается.');
+    setTimeout(() => location.reload(), 9000);
+  } catch (e) {
+    appUpdateStatus = { ...(appUpdateStatus || {}), state: 'error', error: e.message };
+    renderSettings();
+    toast(e.message, 'err');
+  }
 }
 
 async function refreshBypassList(btn) {

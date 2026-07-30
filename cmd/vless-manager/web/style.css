@@ -1521,6 +1521,48 @@ hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
   flex: 1;
   min-width: 0;
 }
+.app-update {
+  align-items: center;
+  background: var(--bg3);
+}
+.app-update-main {
+  flex: 1;
+  min-width: 0;
+}
+.app-update-versions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  margin-bottom: 10px;
+}
+.app-update-versions div {
+  display: grid;
+  gap: 2px;
+}
+.app-update-versions span,
+.app-update-meta {
+  color: var(--text2);
+  font-size: 10px;
+}
+.app-update-versions b {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.app-update-meta {
+  margin-top: 7px;
+}
+.app-update-error {
+  margin-top: 10px;
+  color: var(--red);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.app-update-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
 .bypass-diagnostic-grid {
   display: grid;
   grid-template-columns: 112px minmax(0, 1fr);
@@ -1757,6 +1799,13 @@ hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
   .settings-row {
     grid-template-columns: minmax(0, 1fr) minmax(220px, 250px);
     gap: 24px;
+  }
+  .app-update {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .app-update-actions .btn {
+    flex: 1;
   }
 }
 

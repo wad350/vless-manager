@@ -51,6 +51,7 @@ type apiServer struct {
 	health    *healthMonitor
 	pingCache *pingCache
 	failover  *failoverController
+	updater   *appUpdater
 
 	pingMu       sync.Mutex
 	pingProgress PingProgress
@@ -80,6 +81,7 @@ func newAPIServer(pm *ProcessManager, cfg *Config, subs []*Subscription, cfgPath
 		pingCache: newPingCache(filepath.Join(filepath.Dir(cfgPath), "ping-cache.json")),
 	}
 	s.failover = newFailoverController(s, cfg.AutoFailover, cfg.AutoTunnelFailover)
+	s.updater = newAppUpdater(s)
 	s.connectStartFn = s.startManagedVPN
 	s.health.SetSettingsSource(s.settingsSnapshot)
 	s.routes()
@@ -543,6 +545,10 @@ func (s *apiServer) routes() {
 	s.mux.HandleFunc("/api/traffic", s.handleTraffic)
 	// Version info (manager + bundled sing-box)
 	s.mux.HandleFunc("/api/version", s.handleVersion)
+	// Application updates from signed-by-hash GitHub Release assets.
+	s.mux.HandleFunc("/api/update", s.handleUpdate)
+	s.mux.HandleFunc("/api/update/check", s.handleUpdateCheck)
+	s.mux.HandleFunc("/api/update/install", s.handleUpdateInstall)
 	// On-demand WAN health probe (manual trigger from UI)
 	s.mux.HandleFunc("/api/internet/check", s.handleInternetCheck)
 	// Auto-failover state / toggle

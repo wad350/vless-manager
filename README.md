@@ -1,5 +1,8 @@
 # VLESS Manager
 
+[![Build](https://github.com/wad350/vless-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/wad350/vless-manager/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/wad350/vless-manager)](https://github.com/wad350/vless-manager/releases/latest)
+
 VLESS Manager — менеджер прозрачного VPN для Keenetic с Entware. Он направляет
 трафик самого роутера и устройств локальной сети через VLESS, управляет
 подписками, выбирает рабочий сервер, контролирует туннель и оставляет выбранные
@@ -21,6 +24,7 @@ VLESS Manager — менеджер прозрачного VPN для Keenetic с
 - Bypass для российского списка и пользовательских доменов;
 - график общего, VPN- и Bypass-трафика в битах в секунду;
 - структурированный журнал manager и sing-box;
+- проверка и установка новых версий из GitHub Releases через WebUI;
 - автономный IPK: `iptables` включён в пакет для установки без доступа к
   репозиторию Entware.
 
@@ -50,7 +54,16 @@ make ipk
 
 ## Установка
 
-Пароль роутера не хранится в репозитории и передаётся только при вызове:
+Готовый IPK для Keenetic доступен на странице
+**[Releases](https://github.com/wad350/vless-manager/releases/latest)**.
+При установке вручную:
+
+```sh
+opkg install /tmp/vless-manager_VERSION_mipsel-3.4.ipk
+```
+
+Для сборки и установки из исходного дерева пароль роутера не хранится в
+репозитории и передаётся только при вызове:
 
 ```sh
 make install-ipk PASS='router-password'
@@ -91,6 +104,21 @@ GOCACHE="$PWD/.gocache" GOTOOLCHAIN=go1.24.7 \
 - `singbox_src/` — зафиксированный исходный код sing-box;
 - `packaging/` — сборка пакетов Entware/OpenWrt и init-скрипты;
 - `docs/` — пользовательская документация.
+
+Push и pull request запускают тесты и сборку MIPSLE-бинарника. Тег формата
+`vX.Y.Z`, совпадающий с `VERSION` в `Makefile`, создаёт GitHub Release с
+бинарником, IPK и SHA-256.
+
+## Обновление
+
+В **Настройки → Система** можно проверить и установить последнюю версию.
+Если VPN запущен, GitHub API и release asset сначала загружаются через
+VPN-туннель. При выключенном или неработающем VPN используется прямое
+WAN-соединение.
+
+Перед установкой менеджер проверяет имя release asset, размер, SHA-256 и
+архитектуру ELF. Старый бинарник сохраняется до успешного перезапуска, поэтому
+при ошибке запуска выполняется автоматический откат.
 
 ## Ограничения
 

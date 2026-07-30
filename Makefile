@@ -1,5 +1,5 @@
 # ── Project metadata ──────────────────────────────────────────────────────────
-VERSION      := 1.14.58
+VERSION      := 1.15.0
 ARCH         := mipsel-3.4
 BUILD_DATE   := $(shell date -u +%Y-%m-%d)
 
@@ -8,6 +8,7 @@ BUILD_DATE   := $(shell date -u +%Y-%m-%d)
 # No separate binary — saves ~15 MB RSS on the 124 MB MT7621 router.
 SINGBOX_TAG  := v1.13.14
 BUILD_TAGS   := with_utls
+UPDATE_REPOSITORY ?= wad350/vless-manager
 
 # ── Go cross-compile target (Keenetic MT7621 = mipsle softfloat) ──────────────
 GOOS         := linux
@@ -22,7 +23,8 @@ export GOTOOLCHAIN
 LDFLAGS      := -s -w \
                 -X main.Version=$(VERSION) \
                 -X main.BuildDate=$(BUILD_DATE) \
-                -X main.BundledSingBox=$(SINGBOX_TAG)
+                -X main.BundledSingBox=$(SINGBOX_TAG) \
+                -X main.UpdateRepository=$(UPDATE_REPOSITORY)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BUILD_DIR    := build

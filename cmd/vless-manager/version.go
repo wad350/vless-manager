@@ -2,22 +2,25 @@ package main
 
 // Build-time metadata. Injected via -ldflags by the Makefile.
 var (
-	Version        = "dev"
-	BuildDate      = "unknown"
-	BundledSingBox = "unknown"
+	Version          = "dev"
+	BuildDate        = "unknown"
+	BundledSingBox   = "unknown"
+	UpdateRepository = "wad350/vless-manager"
 )
 
 // BuildInfo is exposed over /api/version.
 type BuildInfo struct {
-	Manager   string `json:"manager"`
-	BuildDate string `json:"build_date"`
-	SingBox   string `json:"sing_box"`
+	Manager          string `json:"manager"`
+	BuildDate        string `json:"build_date"`
+	SingBox          string `json:"sing_box"`
+	UpdateRepository string `json:"update_repository"`
 }
 
 func buildInfo() BuildInfo {
 	return BuildInfo{
-		Manager:   Version,
-		BuildDate: BuildDate,
-		SingBox:   BundledSingBox,
+		Manager:          Version,
+		BuildDate:        BuildDate,
+		SingBox:          BundledSingBox,
+		UpdateRepository: UpdateRepository,
 	}
 }
