@@ -1473,6 +1473,7 @@ let settingsDefaults = null;
 let bypassStatus = null;
 let appUpdateStatus = null;
 let appUpdatePollTimer = null;
+let appUpdateStatusInterval = null;
 let appUpdateRestartMonitor = false;
 let settingsActiveSection = 'vpn';
 
@@ -1489,6 +1490,7 @@ async function loadSettings() {
     settingsDefaults = def;
     bypassStatus = bypass;
     appUpdateStatus = update;
+    renderAppUpdateBadge();
     resumeAppUpdateState();
     renderSettings();
     updateSettingsSavebar();
@@ -1634,6 +1636,9 @@ function renderAppUpdateAction() {
   const error = status.error
     ? `<div class="app-update-alert error"><b>Установка не завершена</b><span>${esc(status.error)}</span></div>`
     : '';
+  const checkWarning = status.check_error && status.checked_at
+    ? `<div class="app-update-alert warning"><b>Не удалось проверить новый релиз</b><span>Показан последний успешный результат: ${esc(status.check_error)}</span></div>`
+    : '';
   let verdict = 'Нажмите «Проверить», чтобы узнать о новой версии.';
   if (status.state === 'ready' && status.available) verdict = `Доступна версия ${esc(latest)}.`;
   if (status.state === 'ready' && !status.available) verdict = 'Установлена актуальная версия.';
@@ -1653,7 +1658,7 @@ function renderAppUpdateAction() {
   const upToDate = status.state === 'ready' && !status.available;
   const successful = upToDate || status.state === 'complete';
 
-  return `<div class="settings-action app-update">
+  return `<div class="settings-action app-update" id="app-update-center">
     <div class="app-update-header">
       <div class="app-update-versions">
         <div><span>Установленная версия</span><b>v${esc(current)}</b></div>
@@ -1689,8 +1694,50 @@ function renderAppUpdateAction() {
       <div><span>Скорость</span><b>${speed ? `${formatUpdateBytes(speed)}/с` : '—'}</b></div>
       <div><span>Защита</span><b>SHA-256 + проверка IPK</b></div>
     </div>
+    ${checkWarning}
     ${error}
   </div>`;
+}
+
+function renderAppUpdateBadge() {
+  const badge = document.getElementById('header-update');
+  const text = document.getElementById('header-update-text');
+  const shortText = document.getElementById('header-update-short');
+  if (!badge || !text || !shortText) return;
+  const available = !!appUpdateStatus?.available && !!appUpdateStatus?.latest_version;
+  badge.hidden = !available;
+  if (!available) return;
+  text.textContent = `Доступна v${appUpdateStatus.latest_version}`;
+  shortText.textContent = `v${appUpdateStatus.latest_version}`;
+  badge.title = `Открыть установку VLESS Manager v${appUpdateStatus.latest_version}`;
+  badge.setAttribute('aria-label', badge.title);
+}
+
+function openAppUpdateSettings() {
+  settingsActiveSection = 'system';
+  activateTab('settings');
+  window.setTimeout(() => {
+    document.getElementById('app-update-center')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 200);
+}
+
+async function refreshAppUpdateStatus() {
+  try {
+    appUpdateStatus = await api('GET', `/update?t=${Date.now()}`);
+    renderAppUpdateBadge();
+    if (document.querySelector('.tab.active')?.dataset.tab === 'settings' && settingsActiveSection === 'system') {
+      renderSettings();
+    }
+  } catch (_) {
+    // The backend keeps the last successful result; a temporary UI/API outage
+    // must not make an already discovered update disappear.
+  }
+}
+
+function startAppUpdateStatusPoll() {
+  refreshAppUpdateStatus();
+  clearInterval(appUpdateStatusInterval);
+  appUpdateStatusInterval = setInterval(refreshAppUpdateStatus, 60000);
 }
 
 function appUpdateIsBusy(status = appUpdateStatus || {}) {
@@ -1727,10 +1774,10 @@ async function checkAppUpdate(btn) {
   renderSettings();
   try {
     appUpdateStatus = await api('POST', '/update/check', {});
+    renderAppUpdateBadge();
     renderSettings();
   } catch (e) {
-    appUpdateStatus = { ...(appUpdateStatus || {}), state: 'error', error: e.message };
-    renderSettings();
+    await refreshAppUpdateStatus();
     toast(e.message, 'err');
   }
 }
@@ -1743,6 +1790,7 @@ async function installAppUpdate(btn) {
   renderSettings();
   try {
     appUpdateStatus = await api('POST', '/update/install', {});
+    renderAppUpdateBadge();
     const target = appUpdateStatus.target_version || version;
     sessionStorage.setItem('vless-manager-update-target', target);
     renderSettings();
@@ -1759,6 +1807,7 @@ function pollAppUpdate() {
   appUpdatePollTimer = setTimeout(async () => {
     try {
       appUpdateStatus = await api('GET', `/update?t=${Date.now()}`);
+      renderAppUpdateBadge();
       renderSettings();
       if (appUpdateStatus.state === 'restarting') {
         waitForAppUpdateRestart(appUpdateStatus.target_version || appUpdateStatus.latest_version);
@@ -1799,6 +1848,7 @@ async function waitForAppUpdateRestart(target) {
           progress: 100,
           error: '',
         };
+        renderAppUpdateBadge();
         sessionStorage.removeItem('vless-manager-update-target');
         appUpdateRestartMonitor = false;
         renderSettings();
@@ -2058,6 +2108,7 @@ document.getElementById('btn-settings-cancel')?.addEventListener('click', () => 
 // ---------- bootstrap ----------
 
 startStatusPoll();
+startAppUpdateStatusPoll();
 const initialTab = window.location.hash.replace(/^#/, '');
 if (!activateTab(initialTab || 'status', false)) activateTab('status', false);
 window.addEventListener('hashchange', () => {

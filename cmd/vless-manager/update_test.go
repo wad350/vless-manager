@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -61,6 +62,83 @@ func TestFetchLatestRelease(t *testing.T) {
 	}
 	if release.TagName != "v1.15.0" {
 		t.Fatalf("tag=%q", release.TagName)
+	}
+}
+
+func TestUpdaterRestoresCachedReleaseForCurrentVersion(t *testing.T) {
+	oldVersion := Version
+	Version = "1.15.2"
+	t.Cleanup(func() { Version = oldVersion })
+
+	dir := t.TempDir()
+	checkedAt := time.Now().Add(-20 * time.Minute)
+	cached := UpdateStatus{
+		CurrentVersion: "1.15.1",
+		LatestVersion:  "1.15.3",
+		Available:      true,
+		State:          "ready",
+		CheckedAt:      &checkedAt,
+		ReleaseURL:     "https://github.com/wad350/vless-manager/releases/tag/v1.15.3",
+	}
+	if err := writeJSONAtomic(filepath.Join(dir, "update-status.json"), cached); err != nil {
+		t.Fatal(err)
+	}
+	api := &apiServer{cfgPath: filepath.Join(dir, "config.json"), pm: NewProcessManager(dir)}
+	status := newAppUpdater(api).snapshot()
+	if status.CurrentVersion != "1.15.2" || status.LatestVersion != "1.15.3" || !status.Available {
+		t.Fatalf("restored status=%+v", status)
+	}
+	if status.State != "ready" || status.Progress != 0 || status.TargetVersion != "" {
+		t.Fatalf("transient state was restored: %+v", status)
+	}
+}
+
+func TestFailedCheckKeepsLastSuccessfulResult(t *testing.T) {
+	oldVersion := Version
+	Version = "1.15.2"
+	t.Cleanup(func() { Version = oldVersion })
+
+	dir := t.TempDir()
+	api := &apiServer{cfgPath: filepath.Join(dir, "config.json"), pm: NewProcessManager(dir)}
+	updater := newAppUpdater(api)
+	checkedAt := time.Now().Add(-10 * time.Minute)
+	updater.status = UpdateStatus{
+		CurrentVersion: Version,
+		LatestVersion:  "1.15.3",
+		Available:      true,
+		State:          "checking",
+		CheckedAt:      &checkedAt,
+		ReleaseURL:     "https://github.com/wad350/vless-manager/releases/tag/v1.15.3",
+	}
+	updater.busy = true
+
+	status := updater.finishCheckFailure(errors.New("GitHub недоступен"), "wan")
+	if !status.Available || status.LatestVersion != "1.15.3" || status.State != "ready" {
+		t.Fatalf("last successful result was lost: %+v", status)
+	}
+	if status.Message != "" || status.Progress != 0 || status.StartedAt != nil {
+		t.Fatalf("failed attempt leaked transient state: %+v", status)
+	}
+	if status.CheckError != "GitHub недоступен" || status.CheckAttemptedAt == nil {
+		t.Fatalf("failed attempt was not recorded: %+v", status)
+	}
+
+	reloaded := newAppUpdater(api).snapshot()
+	if !reloaded.Available || reloaded.LatestVersion != "1.15.3" || reloaded.CheckError == "" {
+		t.Fatalf("persisted result=%+v", reloaded)
+	}
+}
+
+func TestAutoCheckDelayUsesLastAttempt(t *testing.T) {
+	dir := t.TempDir()
+	api := &apiServer{cfgPath: filepath.Join(dir, "config.json"), pm: NewProcessManager(dir)}
+	updater := newAppUpdater(api)
+	now := time.Now()
+	lastAttempt := now.Add(-25 * time.Minute)
+	updater.status.CheckAttemptedAt = &lastAttempt
+	delay := updater.nextAutoCheckDelay(now)
+	if delay < 34*time.Minute || delay > 36*time.Minute {
+		t.Fatalf("delay=%s, want about 35m", delay)
 	}
 }
 

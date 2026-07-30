@@ -108,6 +108,7 @@ func main() {
 	}
 
 	api := newAPIServer(pm, cfg, subs, cfgPath, subPath)
+	go api.updater.runAutoChecks()
 
 	go func() {
 		st := api.settingsSnapshot()

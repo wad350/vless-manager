@@ -29,30 +29,34 @@ import (
 )
 
 const (
-	updateCheckTimeout = 20 * time.Second
-	updateFetchTimeout = 5 * time.Minute
-	maxUpdateBytes     = 64 << 20
+	updateCheckTimeout      = 20 * time.Second
+	updateFetchTimeout      = 5 * time.Minute
+	updateAutoCheckInterval = time.Hour
+	updateInitialCheckDelay = 15 * time.Second
+	maxUpdateBytes          = 64 << 20
 )
 
 var versionPattern = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)$`)
 
 type UpdateStatus struct {
-	CurrentVersion  string     `json:"current_version"`
-	LatestVersion   string     `json:"latest_version,omitempty"`
-	TargetVersion   string     `json:"target_version,omitempty"`
-	Available       bool       `json:"available"`
-	State           string     `json:"state"`
-	Message         string     `json:"message,omitempty"`
-	Progress        int        `json:"progress"`
-	DownloadedBytes int64      `json:"downloaded_bytes,omitempty"`
-	TotalBytes      int64      `json:"total_bytes,omitempty"`
-	BytesPerSecond  int64      `json:"bytes_per_second,omitempty"`
-	Transport       string     `json:"transport,omitempty"`
-	CheckedAt       *time.Time `json:"checked_at,omitempty"`
-	StartedAt       *time.Time `json:"started_at,omitempty"`
-	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
-	ReleaseURL      string     `json:"release_url,omitempty"`
-	Error           string     `json:"error,omitempty"`
+	CurrentVersion   string     `json:"current_version"`
+	LatestVersion    string     `json:"latest_version,omitempty"`
+	TargetVersion    string     `json:"target_version,omitempty"`
+	Available        bool       `json:"available"`
+	State            string     `json:"state"`
+	Message          string     `json:"message,omitempty"`
+	Progress         int        `json:"progress"`
+	DownloadedBytes  int64      `json:"downloaded_bytes,omitempty"`
+	TotalBytes       int64      `json:"total_bytes,omitempty"`
+	BytesPerSecond   int64      `json:"bytes_per_second,omitempty"`
+	Transport        string     `json:"transport,omitempty"`
+	CheckedAt        *time.Time `json:"checked_at,omitempty"`
+	StartedAt        *time.Time `json:"started_at,omitempty"`
+	UpdatedAt        *time.Time `json:"updated_at,omitempty"`
+	ReleaseURL       string     `json:"release_url,omitempty"`
+	Error            string     `json:"error,omitempty"`
+	CheckAttemptedAt *time.Time `json:"check_attempted_at,omitempty"`
+	CheckError       string     `json:"check_error,omitempty"`
 }
 
 type githubRelease struct {
@@ -81,16 +85,20 @@ type appUpdater struct {
 	mu     sync.Mutex
 	busy   bool
 	status UpdateStatus
+	path   string
 }
 
 func newAppUpdater(api *apiServer) *appUpdater {
-	return &appUpdater{
-		api: api,
+	u := &appUpdater{
+		api:  api,
+		path: filepath.Join(filepath.Dir(api.cfgPath), "update-status.json"),
 		status: UpdateStatus{
 			CurrentVersion: Version,
 			State:          "idle",
 		},
 	}
+	u.load()
+	return u
 }
 
 func (u *appUpdater) snapshot() UpdateStatus {
@@ -129,6 +137,103 @@ func (u *appUpdater) finish(status UpdateStatus) {
 	status.UpdatedAt = &now
 	u.status = status
 	u.mu.Unlock()
+}
+
+func (u *appUpdater) load() {
+	data, err := os.ReadFile(u.path)
+	if err != nil {
+		return
+	}
+	var status UpdateStatus
+	if json.Unmarshal(data, &status) != nil || status.LatestVersion == "" || status.CheckedAt == nil {
+		return
+	}
+	available, err := newerVersion(status.LatestVersion, Version)
+	if err != nil && Version != "dev" {
+		return
+	}
+	status.CurrentVersion = Version
+	status.Available = available || Version == "dev"
+	status.State = "ready"
+	status.TargetVersion = ""
+	status.Message = ""
+	status.Progress = 0
+	status.DownloadedBytes = 0
+	status.TotalBytes = 0
+	status.BytesPerSecond = 0
+	status.StartedAt = nil
+	status.Error = ""
+	u.status = status
+}
+
+func (u *appUpdater) persist(status UpdateStatus) {
+	if err := writeJSONAtomic(u.path, status); err != nil {
+		u.api.pm.event(serviceLogWarn, "update", "status.persist_failed",
+			"не удалось сохранить результат проверки обновлений",
+			field("path", u.path),
+			field("error", err))
+	}
+}
+
+func (u *appUpdater) finishCheckFailure(checkErr error, transport string) UpdateStatus {
+	now := time.Now()
+	u.mu.Lock()
+	status := u.status
+	u.busy = false
+	status.CurrentVersion = Version
+	status.CheckAttemptedAt = &now
+	status.CheckError = checkErr.Error()
+	status.UpdatedAt = &now
+	if status.LatestVersion != "" && status.CheckedAt != nil {
+		status.State = "ready"
+		status.Message = ""
+		status.Progress = 0
+		status.DownloadedBytes = 0
+		status.TotalBytes = 0
+		status.BytesPerSecond = 0
+		status.StartedAt = nil
+		status.Error = ""
+	} else {
+		status.State = "error"
+		status.Error = checkErr.Error()
+		if transport != "" {
+			status.Transport = transport
+		}
+	}
+	u.status = status
+	u.mu.Unlock()
+	u.persist(status)
+	return status
+}
+
+func (u *appUpdater) nextAutoCheckDelay(now time.Time) time.Duration {
+	status := u.snapshot()
+	lastAttempt := status.CheckAttemptedAt
+	if lastAttempt == nil {
+		lastAttempt = status.CheckedAt
+	}
+	if lastAttempt == nil {
+		return updateInitialCheckDelay
+	}
+	delay := lastAttempt.Add(updateAutoCheckInterval).Sub(now)
+	if delay < updateInitialCheckDelay {
+		return updateInitialCheckDelay
+	}
+	return delay
+}
+
+func (u *appUpdater) runAutoChecks() {
+	for {
+		time.Sleep(u.nextAutoCheckDelay(time.Now()))
+		ctx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
+		_, err := u.check(ctx)
+		cancel()
+		if err != nil {
+			u.api.pm.event(serviceLogWarn, "update", "check.failed",
+				"автоматическая проверка обновлений не выполнена; сохранён предыдущий результат",
+				field("error", err))
+		}
+	}
 }
 
 func (u *appUpdater) updateStatus(update func(*UpdateStatus)) {
@@ -187,33 +292,29 @@ func (u *appUpdater) check(ctx context.Context) (UpdateStatus, error) {
 
 	release, transport, err := u.fetchRelease(ctx, updateCheckTimeout)
 	if err != nil {
-		status := UpdateStatus{CurrentVersion: Version, State: "error", Error: err.Error()}
-		u.finish(status)
-		return status, err
+		return u.finishCheckFailure(err, ""), err
 	}
 	latest, err := normalizedVersion(release.TagName)
 	if err != nil {
-		status := UpdateStatus{CurrentVersion: Version, State: "error", Transport: transport, Error: err.Error()}
-		u.finish(status)
-		return status, err
+		return u.finishCheckFailure(err, transport), err
 	}
 	available, err := newerVersion(latest, Version)
 	if err != nil && Version != "dev" {
-		status := UpdateStatus{CurrentVersion: Version, State: "error", Transport: transport, Error: err.Error()}
-		u.finish(status)
-		return status, err
+		return u.finishCheckFailure(err, transport), err
 	}
 	checkedAt := time.Now()
 	status := UpdateStatus{
-		CurrentVersion: Version,
-		LatestVersion:  latest,
-		Available:      available || Version == "dev",
-		State:          "ready",
-		Transport:      transport,
-		CheckedAt:      &checkedAt,
-		ReleaseURL:     release.HTMLURL,
+		CurrentVersion:   Version,
+		LatestVersion:    latest,
+		Available:        available || Version == "dev",
+		State:            "ready",
+		Transport:        transport,
+		CheckedAt:        &checkedAt,
+		CheckAttemptedAt: &checkedAt,
+		ReleaseURL:       release.HTMLURL,
 	}
 	u.finish(status)
+	u.persist(status)
 	u.api.pm.event(serviceLogInfo, "update", "check.completed",
 		"проверка обновления завершена",
 		field("current_version", Version),
