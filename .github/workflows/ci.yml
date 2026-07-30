@@ -29,7 +29,10 @@ jobs:
             singbox_src/go.sum
 
       - name: Test
-        run: go test -tags with_utls ./cmd/vless-manager
+        run: |
+          go test -tags with_utls ./cmd/vless-manager
+          sh -n install.sh
+          sh tests/install_test.sh
 
       - name: Build Keenetic binary
         run: make manager

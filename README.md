@@ -56,7 +56,22 @@ make ipk
 
 Готовый IPK для Keenetic доступен на странице
 **[Releases](https://github.com/wad350/vless-manager/releases/latest)**.
-При установке вручную:
+Для быстрой установки или обновления выполните на роутере от `root`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wad350/vless-manager/main/install.sh | sh
+```
+
+Установщик поддерживает также `wget`, проверяет архитектуру Entware и SHA-256,
+после чего устанавливает последний стабильный IPK через `opkg`. Чтобы установить
+конкретную версию:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wad350/vless-manager/main/install.sh | \
+  VLESS_MANAGER_VERSION=1.15.4 sh
+```
+
+При установке скачанного IPK вручную:
 
 ```sh
 opkg install /tmp/vless-manager_VERSION_mipsel-3.4.ipk

@@ -35,7 +35,10 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Test
-        run: go test -tags with_utls ./cmd/vless-manager
+        run: |
+          go test -tags with_utls ./cmd/vless-manager
+          sh -n install.sh
+          sh tests/install_test.sh
 
       - name: Build IPK
         run: make ipk VERSION="$VERSION"
