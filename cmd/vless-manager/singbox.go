@@ -200,7 +200,7 @@ func buildSingBoxVLESSOutbound(srv *VLESSServer) (map[string]any, error) {
 		out["tls"] = tls
 	}
 
-	switch srv.Network {
+	switch normalizeVLESSNetwork(srv.Network) {
 	case "ws":
 		t := map[string]any{"type": "ws"}
 		if srv.Path != "" {

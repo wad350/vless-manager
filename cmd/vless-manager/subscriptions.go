@@ -140,8 +140,9 @@ type Subscription struct {
 	Disabled     bool          `json:"disabled,omitempty"`
 	// DisabledServerIDs contains only the user's explicit choices. Ping
 	// failures never modify this list.
-	DisabledServerIDs []string `json:"disabled_server_ids,omitempty"`
-	ExcludedServers   int      `json:"excluded_servers,omitempty"`
+	DisabledServerIDs  []string       `json:"disabled_server_ids,omitempty"`
+	ExcludedServers    int            `json:"excluded_servers,omitempty"`
+	ExcludedTransports map[string]int `json:"excluded_transports,omitempty"`
 }
 
 func containsServerID(ids []string, id string) bool {
@@ -415,6 +416,7 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 
 	servers := make([]VLESSServer, 0, len(parsedServers))
 	seen := make(map[string]bool, len(parsedServers))
+	excludedTransports := make(map[string]int)
 	for _, srv := range parsedServers {
 		srv.ID = serverFingerprint(srv)
 		if seen[srv.ID] {
@@ -427,6 +429,7 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 		}
 		if !isSupportedServer(&srv) {
 			unsupportedCount++
+			excludedTransports[normalizeVLESSNetwork(srv.Network)]++
 			continue
 		}
 		servers = append(servers, srv)
@@ -443,14 +446,15 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 	}
 
 	sub := &Subscription{
-		ID:              subscriptionID(url),
-		ProviderName:    metadata.Name,
-		Description:     metadata.Description,
-		URL:             url,
-		Servers:         servers,
-		UpdatedAt:       time.Now(),
-		UserInfo:        metadata.UserInfo,
-		ExcludedServers: unsupportedCount,
+		ID:                 subscriptionID(url),
+		ProviderName:       metadata.Name,
+		Description:        metadata.Description,
+		URL:                url,
+		Servers:            servers,
+		UpdatedAt:          time.Now(),
+		UserInfo:           metadata.UserInfo,
+		ExcludedServers:    unsupportedCount,
+		ExcludedTransports: excludedTransports,
 	}
 	if metadata.Name != "" {
 		sub.Name = metadata.Name
@@ -633,10 +637,7 @@ func parseXrayJSONServers(body []byte) []VLESSServer {
 
 func xrayOutboundServers(remarks string, profileVLESSCount int, outbound xrayOutbound) []VLESSServer {
 	stream := outbound.StreamSettings
-	network := strings.ToLower(strings.TrimSpace(stream.Network))
-	if network == "" {
-		network = "tcp"
-	}
+	network := normalizeVLESSNetwork(stream.Network)
 	security := strings.ToLower(strings.TrimSpace(stream.Security))
 	if security == "" {
 		security = "none"
@@ -787,6 +788,7 @@ func loadSubscriptions(path string) ([]*Subscription, error) {
 		removedUnsupported := 0
 		for _, srv := range sub.Servers {
 			oldID := srv.ID
+			srv.Network = normalizeVLESSNetwork(srv.Network)
 			srv.ID = serverFingerprint(srv)
 			if oldID != "" {
 				oldToNew[oldID] = append(oldToNew[oldID], srv.ID)

@@ -193,6 +193,7 @@ func TestFetchSubscriptionExcludesUnsupportedTransports(t *testing.T) {
 		"vless://00000000-0000-0000-0000-000000000001@example.com:443?type=xhttp&security=tls#xhttp",
 		"vless://00000000-0000-0000-0000-000000000002@example.com:443?type=ws&security=tls#supported",
 		"vless://00000000-0000-0000-0000-000000000003@example.com:443?type=mystery&security=tls#unknown",
+		"vless://00000000-0000-0000-0000-000000000004@example.com:443?type=raw&security=reality#raw-is-tcp",
 	}, "\n")
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -205,11 +206,14 @@ func TestFetchSubscriptionExcludesUnsupportedTransports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sub.Servers) != 1 || sub.Servers[0].Network != "ws" {
-		t.Fatalf("servers = %#v, want websocket only", sub.Servers)
+	if len(sub.Servers) != 2 || sub.Servers[0].Network != "ws" || sub.Servers[1].Network != "tcp" {
+		t.Fatalf("servers = %#v, want websocket and normalized raw/TCP", sub.Servers)
 	}
 	if sub.ExcludedServers != 2 {
 		t.Fatalf("excluded = %d, want 2", sub.ExcludedServers)
+	}
+	if sub.ExcludedTransports["xhttp"] != 1 || sub.ExcludedTransports["mystery"] != 1 {
+		t.Fatalf("excluded transports = %#v", sub.ExcludedTransports)
 	}
 }
 
@@ -225,7 +229,7 @@ func TestFetchSubscriptionParsesXrayJSONArray(t *testing.T) {
 					"users": [{"id": "00000000-0000-0000-0000-000000000101", "flow": "xtls-rprx-vision"}]
 				}]},
 				"streamSettings": {
-					"network": "tcp", "security": "reality",
+					"network": "raw", "security": "reality",
 					"realitySettings": {
 						"serverName": "cdn.example", "fingerprint": "firefox",
 						"publicKey": "public-key", "shortId": "abcd"
@@ -317,6 +321,35 @@ func TestLoadSubscriptionsKeepsProfilesWithSharedEndpoint(t *testing.T) {
 	}
 	if len(loaded[0].DisabledServerIDs) != 2 {
 		t.Fatalf("disabled IDs = %v, want both migrated profiles disabled", loaded[0].DisabledServerIDs)
+	}
+}
+
+func TestLoadSubscriptionsMigratesRawTransport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subscriptions.json")
+	input := []*Subscription{{
+		ID: "old-sub", URL: "https://example.com/raw",
+		Servers: []VLESSServer{{
+			ID: "old-raw", Name: "raw", Address: "example.com", Port: 443,
+			UUID: "00000000-0000-0000-0000-000000000001", Network: "raw",
+		}},
+		DisabledServerIDs: []string{"old-raw"},
+	}}
+	if err := saveSubscriptions(path, input); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadSubscriptions(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || len(loaded[0].Servers) != 1 {
+		t.Fatalf("raw server was removed during migration: %#v", loaded)
+	}
+	server := loaded[0].Servers[0]
+	if server.Network != "tcp" || !isSupportedServer(&server) {
+		t.Fatalf("raw server was not normalized: %+v", server)
+	}
+	if len(loaded[0].DisabledServerIDs) != 1 || loaded[0].DisabledServerIDs[0] != server.ID {
+		t.Fatalf("disabled state was not migrated: %#v", loaded[0].DisabledServerIDs)
 	}
 }
 

@@ -709,7 +709,14 @@ function renderSub(sub, priorityIndex, subscriptionCount) {
   const pingHint   = pingedAny ? ` · ${okCount}/${enabledSrvs.length} ✓` : '';
   const disabledHint = disabledIDs.size ? ` · ${disabledIDs.size} выкл.` : '';
   const subscriptionHint = subscriptionDisabled ? ' · подписка выключена' : '';
-  const excludedHint = sub.excluded_servers ? ` · ${sub.excluded_servers} исключено` : '';
+  const excludedTypes = Object.entries(sub.excluded_transports || {})
+    .filter(([, count]) => Number(count) > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([network, count]) => `${esc(network)}: ${Number(count)}`)
+    .join(', ');
+  const excludedHint = sub.excluded_servers
+    ? ` · ${sub.excluded_servers} исключено${excludedTypes ? ` (${excludedTypes})` : ''}`
+    : '';
   const encodedName = encodeURIComponent(sub.name || '').replace(/'/g, '%27');
   const encodedURL = encodeURIComponent(sub.url || '').replace(/'/g, '%27');
   const providerName = (sub.provider_name || '').trim();

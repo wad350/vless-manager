@@ -53,6 +53,58 @@ func TestParseVLESSXHTTPURI(t *testing.T) {
 	}
 }
 
+func TestParseVLESSNormalizesRawToTCP(t *testing.T) {
+	srv, err := parseVLESSURI("vless://00000000-0000-0000-0000-000000000000@example.com:443?type=raw&security=reality#raw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.Network != "tcp" || !isSupportedServer(srv) {
+		t.Fatalf("raw transport parsed as network=%q supported=%v", srv.Network, isSupportedServer(srv))
+	}
+	out, err := buildSingBoxVLESSOutbound(srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := out["transport"]; exists {
+		t.Fatalf("plain TCP/raw outbound must not contain a transport block: %#v", out["transport"])
+	}
+}
+
+func TestParseVLESSGRPCServiceName(t *testing.T) {
+	srv, err := parseVLESSURI("vless://00000000-0000-0000-0000-000000000000@example.com:443?type=grpc&security=reality&serviceName=artemida-grpc&path=wrong#grpc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.Network != "grpc" || srv.Path != "artemida-grpc" || !isSupportedServer(srv) {
+		t.Fatalf("gRPC transport parsed incorrectly: %+v", srv)
+	}
+	out, err := buildSingBoxVLESSOutbound(srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := out["transport"].(map[string]any)
+	if !ok || transport["type"] != "grpc" || transport["service_name"] != "artemida-grpc" {
+		t.Fatalf("gRPC transport generated incorrectly: %#v", out["transport"])
+	}
+}
+
+func TestNormalizeVLESSNetworkAliases(t *testing.T) {
+	tests := map[string]string{
+		"":             "tcp",
+		"RAW":          "tcp",
+		"websocket":    "ws",
+		"http-upgrade": "httpupgrade",
+		"http_upgrade": "httpupgrade",
+		"splithttp":    "xhttp",
+		"kcp":          "kcp",
+	}
+	for input, want := range tests {
+		if got := normalizeVLESSNetwork(input); got != want {
+			t.Errorf("normalizeVLESSNetwork(%q)=%q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestParseVLESSXHTTPExtra(t *testing.T) {
 	const extra = `{"mode":"stream-up","headers":{"Auth-Token":"secret","Host":"hidden.example"},` +
 		`"xPaddingBytes":"200-1500","noGRPCHeader":true,"scMaxBufferedPosts":42}`

@@ -191,6 +191,7 @@ func pruneUnsupportedServers(cfg *Config) int {
 	out := make([]VLESSServer, 0, len(cfg.Servers))
 	pruned := 0
 	for _, srv := range cfg.Servers {
+		srv.Network = normalizeVLESSNetwork(srv.Network)
 		if !isSupportedServer(&srv) {
 			if cfg.ActiveServer == srv.ID {
 				cfg.ActiveServer = ""
@@ -211,6 +212,7 @@ func migrateServerIDs(cfg *Config) {
 	seen := make(map[string]bool)
 	unique := make([]VLESSServer, 0, len(cfg.Servers))
 	for _, s := range cfg.Servers {
+		s.Network = normalizeVLESSNetwork(s.Network)
 		newID := serverFingerprint(s)
 		if s.ID != "" {
 			oldToNew[s.ID] = newID

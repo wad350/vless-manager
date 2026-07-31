@@ -17,9 +17,31 @@ import (
 func serverFingerprint(srv VLESSServer) string {
 	srv.ID = ""
 	srv.Name = ""
+	srv.Network = normalizeVLESSNetwork(srv.Network)
 	data, _ := json.Marshal(srv)
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:8]) // 16 hex chars
+}
+
+// normalizeVLESSNetwork converts share-link and Xray naming variants to the
+// transport names understood by sing-box. Xray renamed its plain TCP transport
+// from "tcp" to "raw"; on the wire they are the same transport (no V2Ray
+// transport block), so rejecting raw nodes would discard valid servers.
+func normalizeVLESSNetwork(network string) string {
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case "", "tcp", "raw":
+		return "tcp"
+	case "websocket":
+		return "ws"
+	case "http-upgrade", "http_upgrade":
+		return "httpupgrade"
+	case "splithttp":
+		// Xray's previous name for XHTTP. Official sing-box does not implement
+		// either spelling, but canonicalizing it keeps filtering deterministic.
+		return "xhttp"
+	default:
+		return strings.ToLower(strings.TrimSpace(network))
+	}
 }
 
 // parseVLESSURI parses a vless:// URI into a VLESSServer.
@@ -61,9 +83,10 @@ func parseVLESSURI(uri string) (*VLESSServer, error) {
 	}
 	name, _ = url.QueryUnescape(name)
 
-	network := q.Get("type")
-	if network == "" {
-		network = "tcp"
+	network := normalizeVLESSNetwork(q.Get("type"))
+	path := q.Get("path")
+	if network == "grpc" {
+		path = firstNonEmpty(q.Get("serviceName"), q.Get("service_name"), path)
 	}
 
 	security := q.Get("security")
@@ -89,7 +112,7 @@ func parseVLESSURI(uri string) (*VLESSServer, error) {
 		ShortID:     q.Get("sid"),
 		SpiderX:     q.Get("spx"),
 		Network:     network,
-		Path:        q.Get("path"),
+		Path:        path,
 		Host:        q.Get("host"),
 		Mode:        q.Get("mode"),
 		XPadding:    firstNonEmpty(q.Get("x_padding_bytes"), q.Get("xPaddingBytes")),

@@ -1326,9 +1326,7 @@ func (s *apiServer) handleServers(w http.ResponseWriter, r *http.Request) {
 		if srv.Name == "" {
 			srv.Name = srv.Address
 		}
-		if srv.Network == "" {
-			srv.Network = "tcp"
-		}
+		srv.Network = normalizeVLESSNetwork(srv.Network)
 		if !isSupportedServer(&srv) {
 			writeError(w, http.StatusBadRequest, "transport "+srv.Network+" is not supported by sing-box "+BundledSingBox)
 			return
@@ -1389,6 +1387,7 @@ func (s *apiServer) handleServerByID(w http.ResponseWriter, r *http.Request) {
 		}
 		srv.ID = id
 		srv.Manual = true
+		srv.Network = normalizeVLESSNetwork(srv.Network)
 		if !isSupportedServer(&srv) {
 			s.mu.Unlock()
 			writeError(w, http.StatusBadRequest, "transport "+srv.Network+" is not supported by sing-box "+BundledSingBox)

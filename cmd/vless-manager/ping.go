@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -48,7 +47,7 @@ var supportedNetworks = map[string]bool{
 }
 
 func isSupportedServer(srv *VLESSServer) bool {
-	return supportedNetworks[strings.ToLower(strings.TrimSpace(srv.Network))]
+	return supportedNetworks[normalizeVLESSNetwork(srv.Network)]
 }
 
 func describeProtocol(srv *VLESSServer) string {
@@ -62,10 +61,7 @@ func describeProtocol(srv *VLESSServer) string {
 	case "tls":
 		sec = "TLS"
 	}
-	net := srv.Network
-	if net == "" {
-		net = "tcp"
-	}
+	net := normalizeVLESSNetwork(srv.Network)
 	return fmt.Sprintf("VLESS %s (%s)", sec, net)
 }
 
