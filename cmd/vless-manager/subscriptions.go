@@ -367,6 +367,7 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "v2rayN/6.0")
+	req.Header.Set("Accept", "application/json, text/plain;q=0.9")
 	// Remnawave providers with device limits return placeholder nodes unless
 	// the client identifies a stable device. Keep this ID unchanged between
 	// updates so the router occupies only one provider device slot.
@@ -382,9 +383,13 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 		return nil, fmt.Errorf("fetch: HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB max
+	const maxSubscriptionBytes = 4 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSubscriptionBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if len(body) > maxSubscriptionBytes {
+		return nil, fmt.Errorf("subscription exceeds %d MiB limit", maxSubscriptionBytes>>20)
 	}
 
 	text := strings.TrimSpace(string(body))
@@ -399,6 +404,7 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 	var parsedServers []VLESSServer
 	placeholderCount := 0
 	unsupportedCount := 0
+	unsupportedSeen := make(map[string]bool)
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -418,6 +424,33 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 	seen := make(map[string]bool, len(parsedServers))
 	excludedTransports := make(map[string]int)
 	for _, srv := range parsedServers {
+		if len(srv.Members) > 0 {
+			members := make([]VLESSServer, 0, len(srv.Members))
+			memberSeen := make(map[string]bool)
+			for _, member := range srv.Members {
+				member.ID = serverFingerprint(member)
+				if memberSeen[member.ID] || isPlaceholderServer(&member) {
+					continue
+				}
+				memberSeen[member.ID] = true
+				if !isSupportedServer(&member) {
+					if !unsupportedSeen[member.ID] {
+						unsupportedSeen[member.ID] = true
+						unsupportedCount++
+						excludedTransports[normalizeVLESSNetwork(member.Network)]++
+					}
+					continue
+				}
+				members = append(members, member)
+			}
+			srv.Members = members
+			if len(members) == 0 {
+				continue
+			}
+			srv.Address = members[0].Address
+			srv.Port = members[0].Port
+			srv.Network = "auto"
+		}
 		srv.ID = serverFingerprint(srv)
 		if seen[srv.ID] {
 			continue
@@ -428,8 +461,11 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 			continue
 		}
 		if !isSupportedServer(&srv) {
-			unsupportedCount++
-			excludedTransports[normalizeVLESSNetwork(srv.Network)]++
+			if !unsupportedSeen[srv.ID] {
+				unsupportedSeen[srv.ID] = true
+				unsupportedCount++
+				excludedTransports[normalizeVLESSNetwork(srv.Network)]++
+			}
 			continue
 		}
 		servers = append(servers, srv)
@@ -609,27 +645,24 @@ func parseXrayJSONServers(body []byte) []VLESSServer {
 		configs = []xraySubscriptionConfig{single}
 	}
 
-	// Parse single-node profiles first. Auto profiles often repeat those same
-	// endpoints; fingerprint de-duplication then retains the useful country
-	// name instead of a generated outbound tag.
 	servers := make([]VLESSServer, 0, len(configs))
-	for _, singleOnly := range []bool{true, false} {
-		for _, cfg := range configs {
-			vlessCount := 0
-			for _, outbound := range cfg.Outbounds {
-				if strings.EqualFold(outbound.Protocol, "vless") {
-					vlessCount++
-				}
+	for _, cfg := range configs {
+		var members []VLESSServer
+		for _, outbound := range cfg.Outbounds {
+			if strings.EqualFold(outbound.Protocol, "vless") {
+				members = append(members, xrayOutboundServers(cfg.Remarks, 1, outbound)...)
 			}
-			if (vlessCount == 1) != singleOnly {
-				continue
-			}
-			for _, outbound := range cfg.Outbounds {
-				if !strings.EqualFold(outbound.Protocol, "vless") {
-					continue
-				}
-				servers = append(servers, xrayOutboundServers(cfg.Remarks, vlessCount, outbound)...)
-			}
+		}
+		if len(members) == 1 {
+			servers = append(servers, members[0])
+		} else if len(members) > 1 {
+			servers = append(servers, VLESSServer{
+				Name:    strings.TrimSpace(cfg.Remarks),
+				Address: members[0].Address,
+				Port:    members[0].Port,
+				Network: "auto",
+				Members: members,
+			})
 		}
 	}
 	return servers

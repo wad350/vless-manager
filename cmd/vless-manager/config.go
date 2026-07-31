@@ -8,25 +8,26 @@ import (
 )
 
 type VLESSServer struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Manual      bool   `json:"manual,omitempty"`
-	Address     string `json:"address"`
-	Port        int    `json:"port"`
-	UUID        string `json:"uuid"`
-	Flow        string `json:"flow"`     // xtls-rprx-vision or ""
-	Security    string `json:"security"` // reality, tls, none
-	SNI         string `json:"sni"`
-	Fingerprint string `json:"fingerprint"` // chrome, firefox, safari, randomized
-	PublicKey   string `json:"public_key"`  // Reality
-	ShortID     string `json:"short_id"`    // Reality
-	SpiderX     string `json:"spider_x"`
-	Network     string `json:"network"` // tcp, ws, grpc, h2/http, httpupgrade, xhttp
-	Path        string `json:"path,omitempty"`
-	Host        string `json:"host,omitempty"`
-	Mode        string `json:"mode,omitempty"`            // XHTTP mode: auto, packet-up, stream-up, stream-one
-	XPadding    string `json:"x_padding_bytes,omitempty"` // XHTTP padding range, e.g. 100-1000
-	ALPN        string `json:"alpn,omitempty"`            // comma-separated TLS ALPN list from share URI
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Manual         bool   `json:"manual,omitempty"`
+	Address        string `json:"address"`
+	Port           int    `json:"port"`
+	UUID           string `json:"uuid"`
+	Flow           string `json:"flow"`                      // xtls-rprx-vision or ""
+	PacketEncoding string `json:"packet_encoding,omitempty"` // xudp, packetaddr or empty
+	Security       string `json:"security"`                  // reality, tls, none
+	SNI            string `json:"sni"`
+	Fingerprint    string `json:"fingerprint"` // chrome, firefox, safari, randomized
+	PublicKey      string `json:"public_key"`  // Reality
+	ShortID        string `json:"short_id"`    // Reality
+	SpiderX        string `json:"spider_x"`
+	Network        string `json:"network"` // tcp, ws, grpc, h2/http, httpupgrade, xhttp
+	Path           string `json:"path,omitempty"`
+	Host           string `json:"host,omitempty"`
+	Mode           string `json:"mode,omitempty"`            // XHTTP mode: auto, packet-up, stream-up, stream-one
+	XPadding       string `json:"x_padding_bytes,omitempty"` // XHTTP padding range, e.g. 100-1000
+	ALPN           string `json:"alpn,omitempty"`            // comma-separated TLS ALPN list from share URI
 
 	NoSSEHeader         bool   `json:"no_sse_header,omitempty"`
 	NoGRPCHeader        bool   `json:"no_grpc_header,omitempty"`
@@ -56,6 +57,12 @@ type VLESSServer struct {
 	// uplinkHTTPMethod=PUT, sc*Posts, custom xmux ranges, …) survive without
 	// us having to enumerate them by hand.
 	Extra json.RawMessage `json:"extra,omitempty"`
+
+	// Members turns this catalog entry into a logical provider profile. Xray
+	// subscriptions commonly publish one profile backed by several VLESS
+	// outbounds and a least-load balancer. At runtime it maps to sing-box
+	// urltest; leaf entries keep this field empty.
+	Members []VLESSServer `json:"members,omitempty"`
 }
 
 type Config struct {

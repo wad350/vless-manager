@@ -70,6 +70,31 @@ func TestParseVLESSNormalizesRawToTCP(t *testing.T) {
 	}
 }
 
+func TestParseVLESSPacketEncoding(t *testing.T) {
+	const base = "vless://00000000-0000-0000-0000-000000000000@example.com:443?type=tcp&security=reality"
+	plain, err := parseVLESSURI(base + "#plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	xudp, err := parseVLESSURI(base + "&packet-encoding=xudp#xudp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if xudp.PacketEncoding != "xudp" {
+		t.Fatalf("packet encoding = %q, want xudp", xudp.PacketEncoding)
+	}
+	if serverFingerprint(*plain) == serverFingerprint(*xudp) {
+		t.Fatal("profiles with different packet encodings have the same ID")
+	}
+	out, err := buildSingBoxVLESSOutbound(xudp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["packet_encoding"] != "xudp" {
+		t.Fatalf("packet_encoding = %v, want xudp", out["packet_encoding"])
+	}
+}
+
 func TestParseVLESSGRPCServiceName(t *testing.T) {
 	srv, err := parseVLESSURI("vless://00000000-0000-0000-0000-000000000000@example.com:443?type=grpc&security=reality&serviceName=artemida-grpc&path=wrong#grpc")
 	if err != nil {
@@ -178,6 +203,24 @@ func TestGeneratedTunMTUIsFixedAt1500(t *testing.T) {
 	}
 	if _, exists := tun["inet4_address"]; exists {
 		t.Fatal("generated config contains removed inet4_address field")
+	}
+}
+
+func TestBuildSingBoxAutoProfile(t *testing.T) {
+	profile := &VLESSServer{Name: "Auto", Members: []VLESSServer{
+		{Address: "one.example", Port: 443, UUID: "00000000-0000-0000-0000-000000000301", Network: "tcp"},
+		{Address: "two.example", Port: 443, UUID: "00000000-0000-0000-0000-000000000302", Network: "grpc", Path: "grpc"},
+	}}
+	outs, err := buildSingBoxProxyOutbounds(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outs) != 3 || outs[2]["type"] != "urltest" || outs[2]["tag"] != "proxy" {
+		t.Fatalf("unexpected profile outbounds: %#v", outs)
+	}
+	tags, ok := outs[2]["outbounds"].([]string)
+	if !ok || len(tags) != 2 || tags[0] != "proxy-1" || tags[1] != "proxy-2" {
+		t.Fatalf("unexpected urltest members: %#v", outs[2]["outbounds"])
 	}
 }
 

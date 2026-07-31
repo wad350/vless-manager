@@ -510,7 +510,7 @@ func (s *apiServer) chooseAlternativeServer() string {
 			field("subscription_order", st.PingFailoverOrder))
 		return ""
 	}
-	s.commitSelectedServer(*server)
+	s.commitSelectedServer(preferGroupMember(*server, result.SelectedMemberID))
 	s.pm.event(serviceLogInfo, "priority", "failover.selection_succeeded",
 		"выбрана замена нерабочему серверу",
 		field("previous_server_id", activeID),
@@ -1210,7 +1210,7 @@ func (s *apiServer) autoSelectBest() string {
 			"ни одна включённая подписка не дала рабочего доступа")
 		return ""
 	}
-	s.commitSelectedServer(*server)
+	s.commitSelectedServer(preferGroupMember(*server, result.SelectedMemberID))
 	s.pm.event(serviceLogInfo, "priority", "selection.succeeded",
 		"автоматически выбран сервер",
 		field("server", result.ServerName),
@@ -1672,6 +1672,14 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 		}
 		s.mu.RUnlock()
 
+		if len(srv.Members) > 0 {
+			results := s.pingServers([]VLESSServer{srv})
+			if len(results) == 0 || results[0].LatencyMS < 0 {
+				writeError(w, http.StatusBadGateway, "ни один узел автопрофиля не отвечает")
+				return
+			}
+			srv = preferGroupMember(srv, results[0].SelectedMemberID)
+		}
 		s.mu.Lock()
 		s.upsertServerLocked(srv)
 		s.mu.Unlock()
@@ -2198,7 +2206,7 @@ func (s *apiServer) prepareServerForStart() (string, error) {
 		s.mu.Unlock()
 		return "", fmt.Errorf("no enabled subscription has working internet")
 	}
-	s.commitSelectedServer(*server)
+	s.commitSelectedServer(preferGroupMember(*server, result.SelectedMemberID))
 	s.pm.event(serviceLogInfo, "priority", "start.selection",
 		"сервер для запуска выбран",
 		field("server", result.ServerName),
@@ -2213,6 +2221,26 @@ func (s *apiServer) commitSelectedServer(server VLESSServer) {
 	s.upsertServerLocked(server)
 	s.cfg.ActiveServer = server.ID
 	_ = s.persistConfigLocked()
+}
+
+func preferGroupMember(server VLESSServer, memberID string) VLESSServer {
+	if memberID == "" || len(server.Members) < 2 || server.Members[0].ID == memberID {
+		return server
+	}
+	for i := 1; i < len(server.Members); i++ {
+		if server.Members[i].ID != memberID {
+			continue
+		}
+		members := append([]VLESSServer(nil), server.Members...)
+		winner := members[i]
+		copy(members[1:i+1], members[0:i])
+		members[0] = winner
+		server.Members = members
+		server.Address = winner.Address
+		server.Port = winner.Port
+		return server
+	}
+	return server
 }
 
 // allServersLocked flattens effective priority groups for diagnostic "ping

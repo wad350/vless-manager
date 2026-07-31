@@ -404,6 +404,27 @@ func (pm *ProcessManager) Status() ProcessStatus {
 // DNS resolver; during an outage those lookups accumulate and can starve a
 // small router. TLS SNI and HTTP Host remain tied to the original hostname.
 func pinVLESSServer(srv *VLESSServer) (*VLESSServer, string, error) {
+	if len(srv.Members) > 0 {
+		pinned := *srv
+		pinned.Members = make([]VLESSServer, 0, len(srv.Members))
+		firstIP := ""
+		for i := range srv.Members {
+			member, dialIP, err := pinVLESSServer(&srv.Members[i])
+			if err != nil {
+				continue
+			}
+			if firstIP == "" {
+				firstIP = dialIP
+				pinned.Address = member.Address
+				pinned.Port = member.Port
+			}
+			pinned.Members = append(pinned.Members, *member)
+		}
+		if len(pinned.Members) == 0 {
+			return nil, "", fmt.Errorf("profile %q has no resolvable members", srv.Name)
+		}
+		return &pinned, firstIP, nil
+	}
 	addrs := ResolveAddrs(srv.Address)
 	if len(addrs) == 0 {
 		return nil, "", fmt.Errorf("%q has no IPv4 address", srv.Address)

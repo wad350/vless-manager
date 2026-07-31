@@ -273,6 +273,30 @@ func TestFetchSubscriptionParsesXrayJSONArray(t *testing.T) {
 	}
 }
 
+func TestFetchSubscriptionPreservesXrayAutoProfile(t *testing.T) {
+	body := `[{"remarks":"Auto 22","outbounds":[
+		{"protocol":"vless","settings":{"vnext":[{"address":"one.example","port":443,"users":[{"id":"00000000-0000-0000-0000-000000000201"}]}]},"streamSettings":{"network":"grpc","security":"reality","grpcSettings":{"serviceName":"grpc"}}},
+		{"protocol":"vless","settings":{"vnext":[{"address":"two.example","port":443,"users":[{"id":"00000000-0000-0000-0000-000000000202"}]}]},"streamSettings":{"network":"tcp","security":"reality"}},
+		{"protocol":"vless","settings":{"vnext":[{"address":"three.example","port":443,"users":[{"id":"00000000-0000-0000-0000-000000000203"}]}]},"streamSettings":{"network":"xhttp","security":"tls"}}
+	]}]`
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if !strings.Contains(req.Header.Get("Accept"), "application/json") {
+			t.Fatal("JSON subscription was not requested")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	sub, err := fetchSubscriptionWithClient("https://example.com/full", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.Servers) != 1 || sub.Servers[0].Name != "Auto 22" || len(sub.Servers[0].Members) != 2 {
+		t.Fatalf("auto profile not preserved: %#v", sub.Servers)
+	}
+	if sub.ExcludedTransports["xhttp"] != 1 {
+		t.Fatalf("excluded transports = %#v", sub.ExcludedTransports)
+	}
+}
+
 func TestPruneUnsupportedServersRemovesXHTTP(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Servers = []VLESSServer{

@@ -16,7 +16,9 @@ import (
 // distinct servers and must be pinged, disabled and selected independently.
 func serverFingerprint(srv VLESSServer) string {
 	srv.ID = ""
-	srv.Name = ""
+	if len(srv.Members) == 0 {
+		srv.Name = ""
+	}
 	srv.Network = normalizeVLESSNetwork(srv.Network)
 	data, _ := json.Marshal(srv)
 	h := sha256.Sum256(data)
@@ -100,23 +102,24 @@ func parseVLESSURI(uri string) (*VLESSServer, error) {
 	}
 
 	srv := &VLESSServer{
-		Name:        name,
-		Address:     host,
-		Port:        port,
-		UUID:        uuid,
-		Flow:        q.Get("flow"),
-		Security:    security,
-		SNI:         q.Get("sni"),
-		Fingerprint: fp,
-		PublicKey:   q.Get("pbk"),
-		ShortID:     q.Get("sid"),
-		SpiderX:     q.Get("spx"),
-		Network:     network,
-		Path:        path,
-		Host:        q.Get("host"),
-		Mode:        q.Get("mode"),
-		XPadding:    firstNonEmpty(q.Get("x_padding_bytes"), q.Get("xPaddingBytes")),
-		ALPN:        q.Get("alpn"),
+		Name:           name,
+		Address:        host,
+		Port:           port,
+		UUID:           uuid,
+		Flow:           q.Get("flow"),
+		PacketEncoding: firstNonEmpty(q.Get("packet-encoding"), q.Get("packet_encoding"), q.Get("packetEncoding")),
+		Security:       security,
+		SNI:            q.Get("sni"),
+		Fingerprint:    fp,
+		PublicKey:      q.Get("pbk"),
+		ShortID:        q.Get("sid"),
+		SpiderX:        q.Get("spx"),
+		Network:        network,
+		Path:           path,
+		Host:           q.Get("host"),
+		Mode:           q.Get("mode"),
+		XPadding:       firstNonEmpty(q.Get("x_padding_bytes"), q.Get("xPaddingBytes")),
+		ALPN:           q.Get("alpn"),
 	}
 
 	// Most modern xhttp share-links (3x-ui, Marzban, hUI, etc.) carry the

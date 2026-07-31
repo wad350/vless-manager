@@ -56,7 +56,7 @@ func generateSingBoxConfig(cfg *Config, srv *VLESSServer) ([]byte, error) {
 		"listen_port": socksHealthPort,
 	}
 
-	out, err := buildSingBoxVLESSOutbound(srv)
+	proxyOutbounds, err := buildSingBoxProxyOutbounds(srv)
 	if err != nil {
 		return nil, err
 	}
@@ -68,10 +68,7 @@ func generateSingBoxConfig(cfg *Config, srv *VLESSServer) ([]byte, error) {
 	if runtime.GOOS == "linux" {
 		directOut["routing_mark"] = WANFwmark
 	}
-	outbounds := []map[string]any{
-		out,
-		directOut,
-	}
+	outbounds := append(proxyOutbounds, directOut)
 
 	// DNS — local-only. Routing DNS through the VLESS tunnel on softfloat
 	// MIPS causes a death spiral: every new TCP connection triggers a
@@ -140,6 +137,40 @@ func generateSingBoxConfig(cfg *Config, srv *VLESSServer) ([]byte, error) {
 	return json.MarshalIndent(config, "", "  ")
 }
 
+func buildSingBoxProxyOutbounds(srv *VLESSServer) ([]map[string]any, error) {
+	if len(srv.Members) == 0 {
+		out, err := buildSingBoxVLESSOutbound(srv)
+		if err != nil {
+			return nil, err
+		}
+		return []map[string]any{out}, nil
+	}
+
+	outbounds := make([]map[string]any, 0, len(srv.Members)+1)
+	tags := make([]string, 0, len(srv.Members))
+	for i := range srv.Members {
+		out, err := buildSingBoxVLESSOutbound(&srv.Members[i])
+		if err != nil {
+			return nil, fmt.Errorf("profile member %d: %w", i+1, err)
+		}
+		tag := fmt.Sprintf("proxy-%d", i+1)
+		out["tag"] = tag
+		tags = append(tags, tag)
+		outbounds = append(outbounds, out)
+	}
+	outbounds = append(outbounds, map[string]any{
+		"type":                        "urltest",
+		"tag":                         "proxy",
+		"outbounds":                   tags,
+		"url":                         defaultPingTestURL,
+		"interval":                    "10m",
+		"tolerance":                   50,
+		"idle_timeout":                "30m",
+		"interrupt_exist_connections": false,
+	})
+	return outbounds, nil
+}
+
 func buildSingBoxVLESSOutbound(srv *VLESSServer) (map[string]any, error) {
 	out := map[string]any{
 		"type":        "vless",
@@ -161,6 +192,9 @@ func buildSingBoxVLESSOutbound(srv *VLESSServer) (map[string]any, error) {
 	}
 	if srv.Flow != "" {
 		out["flow"] = srv.Flow
+	}
+	if srv.PacketEncoding != "" {
+		out["packet_encoding"] = srv.PacketEncoding
 	}
 
 	alpnList := splitCSV(srv.ALPN)

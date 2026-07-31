@@ -22,15 +22,16 @@ const defaultPingTestURL = "http://www.gstatic.com/generate_204"
 // THIS specific server as its outbound. Marked incompatible upfront if the
 // transport is not supported by sing-box.
 type PingResult struct {
-	ServerID   string    `json:"server_id"`
-	ServerName string    `json:"server_name"`
-	Address    string    `json:"address"`
-	Port       int       `json:"port"`
-	Protocol   string    `json:"protocol"`
-	LatencyMS  int64     `json:"latency_ms"` // -1 = unreachable
-	Error      string    `json:"error,omitempty"`
-	Incompat   bool      `json:"incompatible,omitempty"`
-	CheckedAt  time.Time `json:"checked_at"`
+	ServerID         string    `json:"server_id"`
+	ServerName       string    `json:"server_name"`
+	Address          string    `json:"address"`
+	Port             int       `json:"port"`
+	Protocol         string    `json:"protocol"`
+	LatencyMS        int64     `json:"latency_ms"` // -1 = unreachable
+	Error            string    `json:"error,omitempty"`
+	Incompat         bool      `json:"incompatible,omitempty"`
+	CheckedAt        time.Time `json:"checked_at"`
+	SelectedMemberID string    `json:"selected_member_id,omitempty"`
 }
 
 // supportedNetworks — VLESS transports sing-box can actually speak.
@@ -47,10 +48,16 @@ var supportedNetworks = map[string]bool{
 }
 
 func isSupportedServer(srv *VLESSServer) bool {
+	if len(srv.Members) > 0 {
+		return true
+	}
 	return supportedNetworks[normalizeVLESSNetwork(srv.Network)]
 }
 
 func describeProtocol(srv *VLESSServer) string {
+	if len(srv.Members) > 0 {
+		return fmt.Sprintf("VLESS auto (%d узлов)", len(srv.Members))
+	}
 	sec := srv.Security
 	if sec == "" || sec == "none" {
 		sec = "plain"
@@ -130,6 +137,9 @@ func pingBatchViaSingBox(servers []VLESSServer, timeout time.Duration, testURL s
 }
 
 func pingBatchViaSingBoxContext(ctx context.Context, servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
+	if containsServerGroup(servers) {
+		return pingServerGroups(ctx, servers, timeout, testURL, maxParallel, onDone)
+	}
 	results := make([]PingResult, len(servers))
 	for i, srv := range servers {
 		results[i] = PingResult{
@@ -189,6 +199,68 @@ func pingBatchViaSingBoxContext(ctx context.Context, servers []VLESSServer, time
 		}(i)
 	}
 	wg.Wait()
+	return results
+}
+
+func containsServerGroup(servers []VLESSServer) bool {
+	for i := range servers {
+		if len(servers[i].Members) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// pingServerGroups probes every distinct physical endpoint once and derives a
+// logical profile result from its fastest reachable member. Provider auto
+// profiles heavily overlap; probing each profile independently would turn 50
+// endpoints into hundreds of temporary sing-box instances on the router.
+func pingServerGroups(ctx context.Context, servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
+	leaves := make([]VLESSServer, 0, len(servers))
+	seen := make(map[string]bool)
+	for _, srv := range servers {
+		members := srv.Members
+		if len(members) == 0 {
+			members = []VLESSServer{srv}
+		}
+		for _, member := range members {
+			if !seen[member.ID] {
+				seen[member.ID] = true
+				leaves = append(leaves, member)
+			}
+		}
+	}
+	leafResults := pingBatchViaSingBoxContext(ctx, leaves, timeout, testURL, maxParallel, nil)
+	byID := make(map[string]PingResult, len(leafResults))
+	for _, result := range leafResults {
+		byID[result.ServerID] = result
+	}
+
+	results := make([]PingResult, len(servers))
+	for i, srv := range servers {
+		if len(srv.Members) == 0 {
+			results[i] = byID[srv.ID]
+		} else {
+			result := PingResult{ServerID: srv.ID, ServerName: srv.Name, Address: srv.Address, Port: srv.Port, Protocol: describeProtocol(&srv), LatencyMS: -1, CheckedAt: time.Now()}
+			for _, member := range srv.Members {
+				candidate := byID[member.ID]
+				if candidate.LatencyMS >= 0 && (result.LatencyMS < 0 || candidate.LatencyMS < result.LatencyMS) {
+					result.LatencyMS = candidate.LatencyMS
+					result.Address = candidate.Address
+					result.Port = candidate.Port
+					result.Error = ""
+					result.SelectedMemberID = member.ID
+				}
+			}
+			if result.LatencyMS < 0 {
+				result.Error = "ни один узел профиля не отвечает"
+			}
+			results[i] = result
+		}
+		if onDone != nil {
+			onDone(i, results[i])
+		}
+	}
 	return results
 }
 

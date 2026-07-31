@@ -1,5 +1,5 @@
 # ── Project metadata ──────────────────────────────────────────────────────────
-VERSION      := 1.15.5
+VERSION      := 1.15.6
 ARCH         := mipsel-3.4
 BUILD_DATE   := $(shell date -u +%Y-%m-%d)
 

@@ -24,6 +24,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/protocol/direct"
+	"github.com/sagernet/sing-box/protocol/group"
 	"github.com/sagernet/sing-box/protocol/socks"
 	tuninbound "github.com/sagernet/sing-box/protocol/tun"
 	"github.com/sagernet/sing-box/protocol/vless"
@@ -203,10 +204,15 @@ func startTemporaryVLESSSOCKS(srv *VLESSServer, logs *ringBuffer) (boxHandle, in
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 
-	out, err := buildSingBoxVLESSOutbound(srv)
+	proxyOutbounds, err := buildSingBoxProxyOutbounds(srv)
 	if err != nil {
 		return nil, 0, err
 	}
+	outbounds := make([]any, 0, len(proxyOutbounds)+1)
+	for _, outbound := range proxyOutbounds {
+		outbounds = append(outbounds, outbound)
+	}
+	outbounds = append(outbounds, map[string]any{"type": "direct", "tag": "direct"})
 	cfg := map[string]any{
 		"log": map[string]any{
 			"level": "error", "timestamp": false, "output": os.DevNull,
@@ -215,7 +221,7 @@ func startTemporaryVLESSSOCKS(srv *VLESSServer, logs *ringBuffer) (boxHandle, in
 			"type": "socks", "tag": "socks-ping",
 			"listen": "127.0.0.1", "listen_port": port,
 		}},
-		"outbounds": []any{out, map[string]any{"type": "direct", "tag": "direct"}},
+		"outbounds": outbounds,
 		"route":     map[string]any{"final": "proxy"},
 	}
 	cfgJSON, err := json.Marshal(cfg)
@@ -244,6 +250,7 @@ func newBoxInstance(ctx context.Context, cfgJSON []byte, logs *ringBuffer) (*box
 
 	outboundReg := outbound.NewRegistry()
 	direct.RegisterOutbound(outboundReg)
+	group.RegisterURLTest(outboundReg)
 	vless.RegisterOutbound(outboundReg)
 
 	endpointReg := endpoint.NewRegistry()

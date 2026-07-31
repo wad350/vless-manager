@@ -693,7 +693,7 @@ function renderSub(sub, priorityIndex, subscriptionCount) {
       </label>
       <div class="sub-server-content">
         <div class="sub-server-name">${esc(s.name)}${active ? ' <span class="active-label">активен</span>' : ''}${disabled ? ' <span class="disabled-label">выключен</span>' : ''}</div>
-        <div class="sub-server-meta">${esc(s.address)}:${s.port} · ${protocolTag(s)}</div>
+        <div class="sub-server-meta">${s.members?.length ? `${s.members.length} узлов · автоматический выбор` : `${esc(s.address)}:${s.port}`} · ${protocolTag(s)}</div>
       </div>
       <div class="sub-server-actions">
         ${disabled ? '' : pingBadge(pingResults[s.id])}
@@ -762,8 +762,11 @@ function renderSub(sub, priorityIndex, subscriptionCount) {
 
 // protocolTag returns a chip describing the VLESS encryption + transport.
 // The transport is highlighted red when sing-box can't speak it.
-const SUPPORTED_NETWORKS = new Set(['', 'tcp', 'ws', 'grpc', 'h2', 'http', 'httpupgrade', 'quic']);
+const SUPPORTED_NETWORKS = new Set(['', 'tcp', 'ws', 'grpc', 'h2', 'http', 'httpupgrade', 'quic', 'auto']);
 function protocolTag(s) {
+  if (s.members?.length) {
+    return `<span class="tag reality">VLESS</span><span class="tag transport">авто</span>`;
+  }
   let sec = (s.security || 'none').toLowerCase();
   let secLabel = 'plain', secCls = '';
   if (sec === 'reality')   { secLabel = 'Reality'; secCls = 'reality'; }

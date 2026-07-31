@@ -19,6 +19,21 @@ func newBehaviorTestAPI(t *testing.T, cfg *Config, subs []*Subscription) *apiSer
 	)
 }
 
+func TestPreferGroupMemberMovesWinnerFirst(t *testing.T) {
+	server := VLESSServer{Name: "auto", Members: []VLESSServer{
+		{ID: "slow", Address: "slow.example", Port: 443},
+		{ID: "fast", Address: "fast.example", Port: 8443},
+		{ID: "other", Address: "other.example", Port: 443},
+	}}
+	got := preferGroupMember(server, "fast")
+	if got.Members[0].ID != "fast" || got.Address != "fast.example" || got.Port != 8443 {
+		t.Fatalf("winner was not promoted: %+v", got)
+	}
+	if server.Members[0].ID != "slow" {
+		t.Fatal("source profile was mutated")
+	}
+}
+
 func TestRunPingAllHandlesIncompatibleServer(t *testing.T) {
 	cfg := defaultConfig()
 	server := VLESSServer{ID: "unsupported", Name: "unsupported", Address: "127.0.0.1", Port: 443, Network: "mystery"}
