@@ -172,7 +172,8 @@ async function fetchStatus() {
 
     if (selecting) {
       const p = s.ping_progress;
-      subtitle.textContent = `Проверено ${p.done || 0} из ${p.total || 0} · доступно ${p.reachable || 0}`;
+      const profiles = p.profiles_total ? ` · профилей ${p.profiles_total}` : '';
+      subtitle.textContent = `Проверено узлов ${p.done || 0} из ${p.total || 0}${profiles} · доступно узлов ${p.reachable || 0}`;
     } else if (s.running && s.failover && !s.failover.enabled) {
       subtitle.textContent = s.failover.tunnel_failover_enabled
         ? 'Ручной режим · туннель проверяется и будет заменён при отказе'
@@ -208,8 +209,9 @@ function renderActiveConnection(s) {
     document.getElementById('active-server-name').textContent =
       `Проверяется ${p.group || 'список серверов'}`;
     document.getElementById('active-server-endpoint').textContent =
-      `${p.done || 0} из ${p.total || 0}`;
-    document.getElementById('active-server-protocol').textContent = 'Поиск рабочего сервера';
+      `${p.done || 0} из ${p.total || 0} узлов`;
+    document.getElementById('active-server-protocol').textContent =
+      p.profiles_total ? `Проверка ${p.profiles_total} профилей` : 'Поиск рабочего сервера';
     document.getElementById('active-server-source').textContent = 'По приоритету подписок';
     const latency = document.getElementById('active-server-latency');
     latency.textContent = 'проверка';
@@ -315,8 +317,7 @@ function updateStartButton(s) {
 
   if (pingRunning) {
     btn.disabled = true;
-    const cur = pp.current ? `· ${pp.current}` : '';
-    btn.innerHTML = `<span class="spinner"></span> Пинг ${pp.done}/${pp.total} ${esc(cur)}`;
+    btn.innerHTML = `<span class="spinner"></span> Узлы ${pp.done}/${pp.total}`;
   } else {
     btn.disabled = s.running;
     if (!btn.dataset.busy) btn.innerHTML = '▶ Запустить VPN';
@@ -672,6 +673,7 @@ function renderSub(sub, priorityIndex, subscriptionCount) {
   const subscriptionDisabled = !!sub.disabled;
   const disabledIDs = new Set(sub.disabled_server_ids || []);
   const enabledSrvs = subscriptionDisabled ? [] : srvs.filter(s => !disabledIDs.has(s.id));
+  const serverUnit = srvs.some(s => Array.isArray(s.members) && s.members.length) ? 'проф.' : 'серв.';
   const upd  = sub.updated_at ? new Date(sub.updated_at).toLocaleString('ru') : '—';
   const errBadge = sub.error
     ? `<div class="sub-error">${esc(sub.error)}</div>` : '';
@@ -736,7 +738,7 @@ function renderSub(sub, priorityIndex, subscriptionCount) {
       </div>
       <div class="sub-summary">
         <div class="sub-name">${esc(sub.name || sub.url)}${providerHint}${quotaBadge}</div>
-        <div class="sub-meta">${enabledSrvs.length}/${srvs.length} серв.${pingHint}${disabledHint}${subscriptionHint}${excludedHint} · ${upd}</div>
+        <div class="sub-meta">${enabledSrvs.length}/${srvs.length} ${serverUnit}${pingHint}${disabledHint}${subscriptionHint}${excludedHint} · ${upd}</div>
         <div class="sub-url" title="${esc(sub.url || '')}">${esc(sub.url || '')}</div>
         ${errBadge}
       </div>

@@ -31,6 +31,7 @@ type PingProgress struct {
 	StartedAt time.Time `json:"started_at"`
 	Reachable int       `json:"reachable"` // running count of successes
 	Incompat  int       `json:"incompatible"`
+	Profiles  int       `json:"profiles_total"` // logical profiles represented by the physical endpoints
 }
 
 type priorityServerGroup struct {
@@ -166,6 +167,7 @@ func (s *apiServer) runPingAllNamed(servers []VLESSServer, group string) []PingR
 	s.pingProgress = PingProgress{
 		Running:   true,
 		Total:     pingWorkUnitCount(servers),
+		Profiles:  len(servers),
 		Group:     group,
 		StartedAt: time.Now(),
 	}
