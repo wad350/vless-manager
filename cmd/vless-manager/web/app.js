@@ -314,10 +314,14 @@ function updateStartButton(s) {
   const btn = document.getElementById('btn-start');
   const pp = s.ping_progress;
   const pingRunning = !!(pp && pp.running);
+  btn.classList.toggle('pinging', pingRunning);
 
   if (pingRunning) {
     btn.disabled = true;
-    btn.innerHTML = `<span class="spinner"></span> Узлы ${pp.done}/${pp.total}`;
+    const current = pp.current
+      ? `<span class="ping-current" title="${esc(pp.current)}">${esc(pp.current)}</span>`
+      : '';
+    btn.innerHTML = `<span class="spinner"></span><span class="ping-progress-count">Узлы ${pp.done}/${pp.total}</span>${current}`;
   } else {
     btn.disabled = s.running;
     if (!btn.dataset.busy) btn.innerHTML = '▶ Запустить VPN';

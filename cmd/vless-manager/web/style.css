@@ -218,6 +218,18 @@ header .badge {
   flex-shrink: 0;
   gap: 7px;
 }
+.connection-actions #btn-start.pinging {
+  min-width: 0;
+  max-width: min(440px, 44vw);
+}
+.ping-progress-count { flex-shrink: 0; }
+.ping-current {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .active-connection {
   position: relative;
   padding: 15px 16px 14px;
@@ -604,6 +616,8 @@ header .badge {
     padding-left: 59px;
   }
   .connection-actions .btn { flex: 1; justify-content: center; }
+  .connection-actions #btn-start.pinging { max-width: 100%; }
+  .ping-current { max-width: 38vw; }
   .connection-facts { grid-template-columns: 1fr 1fr; }
   .connection-health { grid-template-columns: 1fr; }
   .health-cell {
