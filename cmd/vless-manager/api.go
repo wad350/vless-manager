@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -53,6 +54,7 @@ type apiServer struct {
 	pingCache *pingCache
 	failover  *failoverController
 	updater   *appUpdater
+	auth      *authService
 
 	pingMu       sync.Mutex
 	pingProgress PingProgress
@@ -80,6 +82,7 @@ func newAPIServer(pm *ProcessManager, cfg *Config, subs []*Subscription, cfgPath
 		mux:       http.NewServeMux(),
 		health:    newHealthMonitor(),
 		pingCache: newPingCache(filepath.Join(filepath.Dir(cfgPath), "ping-cache.json")),
+		auth:      newAuthService(newKeeneticAuthenticator("")),
 	}
 	s.failover = newFailoverController(s, cfg.AutoFailover, cfg.AutoTunnelFailover)
 	s.updater = newAppUpdater(s)
@@ -523,10 +526,31 @@ func (s *apiServer) chooseAlternativeServer() string {
 }
 
 func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") && !isPublicAuthPath(r.URL.Path) {
+		settings := s.settingsSnapshot()
+		if settings.AuthEnabled {
+			cookie, err := r.Cookie(authCookieName)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			if _, ok := s.auth.session(cookie.Value, time.Duration(settings.AuthSessionTTLHours)*time.Hour); !ok {
+				writeError(w, http.StatusUnauthorized, "session expired")
+				return
+			}
+		}
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
+func isPublicAuthPath(path string) bool {
+	return path == "/api/auth/status" || path == "/api/auth/login" || path == "/api/auth/logout"
+}
+
 func (s *apiServer) routes() {
+	s.mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
+	s.mux.HandleFunc("/api/auth/login", s.handleAuthLogin)
+	s.mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
 	s.mux.HandleFunc("/api/status", s.handleStatus)
 	s.mux.HandleFunc("/api/config", s.handleConfig)
 	s.mux.HandleFunc("/api/start", s.handleStart)
@@ -565,6 +589,115 @@ func (s *apiServer) routes() {
 	s.mux.HandleFunc("/api/settings/defaults", s.handleSettingsDefaults)
 	// Runtime-refreshable copy of the embedded RU bypass whitelist.
 	s.mux.HandleFunc("/api/bypass", s.handleBypass)
+}
+
+func (s *apiServer) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	settings := s.settingsSnapshot()
+	response := map[string]any{
+		"enabled":       settings.AuthEnabled,
+		"authenticated": !settings.AuthEnabled,
+	}
+	if !settings.AuthEnabled {
+		writeJSON(w, response)
+		return
+	}
+	if cookie, err := r.Cookie(authCookieName); err == nil {
+		if session, ok := s.auth.session(cookie.Value, time.Duration(settings.AuthSessionTTLHours)*time.Hour); ok {
+			response["authenticated"] = true
+			response["login"] = session.Login
+			response["expires_at"] = session.ExpiresAt
+		}
+	}
+	writeJSON(w, response)
+}
+
+func (s *apiServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	settings := s.settingsSnapshot()
+	if !settings.AuthEnabled {
+		writeJSON(w, map[string]any{"authenticated": true, "enabled": false})
+		return
+	}
+	client := authClientIP(r)
+	if remaining, blocked := s.auth.blocked(client); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(remaining.Seconds()))))
+		writeError(w, http.StatusTooManyRequests, "too many login attempts; try again shortly")
+		return
+	}
+	var request struct {
+		Login    string `json:"login"`
+		Password string `json:"password"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid login request")
+		return
+	}
+	request.Login = strings.TrimSpace(request.Login)
+	if request.Login == "" || request.Password == "" {
+		writeError(w, http.StatusBadRequest, "login and password are required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	err := s.auth.authenticator.Authenticate(ctx, request.Login, request.Password)
+	if err != nil && !errors.Is(err, errInvalidCredentials) && ctx.Err() == nil {
+		s.pm.event(serviceLogDebug, "auth", "auth.backend_retry", "повторная попытка связи с Keenetic", field("error", err))
+		timer := time.NewTimer(300 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+		case <-timer.C:
+			err = s.auth.authenticator.Authenticate(ctx, request.Login, request.Password)
+		}
+	}
+	if err != nil {
+		if errors.Is(err, errInvalidCredentials) {
+			s.auth.failed(client)
+			time.Sleep(300 * time.Millisecond)
+			s.pm.event(serviceLogWarn, "auth", "auth.login_failed", "неверные данные для входа", field("client_ip", client), field("login", request.Login))
+			writeError(w, http.StatusUnauthorized, "invalid login or password")
+			return
+		}
+		s.pm.event(serviceLogError, "auth", "auth.backend_failed", "Keenetic не смог проверить данные для входа", field("client_ip", client), field("error", err))
+		writeError(w, http.StatusBadGateway, "Keenetic authentication is unavailable")
+		return
+	}
+	s.auth.succeeded(client)
+	ttl := time.Duration(settings.AuthSessionTTLHours) * time.Hour
+	token, session, err := s.auth.createSession(request.Login, ttl)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot create session")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: authCookieName, Value: token, Path: "/", HttpOnly: true,
+		SameSite: http.SameSiteStrictMode, MaxAge: int(ttl.Seconds()),
+	})
+	s.pm.event(serviceLogInfo, "auth", "auth.login_succeeded", "вход в VLESS Manager", field("client_ip", client), field("login", request.Login))
+	writeJSON(w, map[string]any{"authenticated": true, "enabled": true, "login": session.Login, "expires_at": session.ExpiresAt})
+}
+
+func (s *apiServer) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if cookie, err := r.Cookie(authCookieName); err == nil {
+		s.auth.deleteSession(cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: authCookieName, Value: "", Path: "/", HttpOnly: true,
+		SameSite: http.SameSiteStrictMode, MaxAge: -1,
+	})
+	writeJSON(w, map[string]bool{"authenticated": false})
 }
 
 // handleSettings:

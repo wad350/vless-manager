@@ -24,6 +24,7 @@ VLESS Manager — менеджер прозрачного VPN для Keenetic с
 - Bypass для российского списка и пользовательских доменов;
 - график общего, VPN- и Bypass-трафика в битах в секунду;
 - структурированный журнал manager и sing-box;
+- необязательная авторизация по учётной записи Keenetic без хранения пароля;
 - проверка и установка новых версий из GitHub Releases через WebUI;
 - автономный IPK: `iptables` включён в пакет для установки без доступа к
   репозиторию Entware.
@@ -68,7 +69,7 @@ curl -fsSL https://raw.githubusercontent.com/wad350/vless-manager/main/install.s
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/wad350/vless-manager/main/install.sh | \
-  VLESS_MANAGER_VERSION=1.15.9 sh
+  VLESS_MANAGER_VERSION=1.16.0 sh
 ```
 
 При установке скачанного IPK вручную:
@@ -151,6 +152,13 @@ WAN-соединение.
   QUIC на TCP и не создавали чрезмерную нагрузку на роутер.
 
 ## Безопасность
+
+В **Настройки → Доступ** можно включить обязательный вход в WebUI и API.
+Менеджер проверяет введённые данные через штатный challenge-response Keenetic:
+пароль не сохраняется и не передаётся в открытом виде. Сессия хранится в
+`HttpOnly` cookie с `SameSite=Strict`, а повторные ошибки входа временно
+блокируются. После включения используйте логин и пароль панели управления
+Keenetic, а не отдельную учётную запись Entware.
 
 Не коммитьте `config.json`, `subscriptions.json`, ссылки подписок, UUID и
 пароли роутера. Локальные runtime-файлы исключены через `.gitignore`.

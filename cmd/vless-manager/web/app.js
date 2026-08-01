@@ -79,10 +79,95 @@ async function api(method, path, body) {
     opts.body = JSON.stringify(body);
   }
   const r = await fetch('/api' + path, opts);
-  const data = await r.json();
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401 && !path.startsWith('/auth/')) {
+    showLogin('Сессия завершена. Войдите снова.');
+  }
   if (!r.ok) throw new Error(data.error || r.statusText);
   return data;
 }
+
+let appBootstrapped = false;
+
+function stopAppPolling() {
+  clearInterval(statusInterval); statusInterval = null;
+  clearInterval(trafficInterval); trafficInterval = null;
+  clearInterval(logInterval); logInterval = null;
+  clearInterval(appUpdateStatusInterval); appUpdateStatusInterval = null;
+}
+
+function showLogin(message = '') {
+  stopAppPolling();
+  document.getElementById('app').hidden = true;
+  document.getElementById('login-screen').hidden = false;
+  const error = document.getElementById('login-error');
+  error.textContent = message;
+  error.hidden = !message;
+  document.getElementById('login-password').value = '';
+  document.getElementById('login-name').focus();
+}
+
+function showApp(auth) {
+  document.getElementById('login-screen').hidden = true;
+  document.getElementById('app').hidden = false;
+  const logout = document.getElementById('header-logout');
+  logout.hidden = !auth.enabled;
+  if (!appBootstrapped) {
+    appBootstrapped = true;
+    const initialTab = window.location.hash.replace(/^#/, '');
+    if (!activateTab(initialTab || 'status', false)) activateTab('status', false);
+    loadVersion();
+    loadPingCache();
+  }
+  startStatusPoll();
+  startAppUpdateStatusPoll();
+  if (isStatusTabActive()) startTrafficPoll();
+  if (isLogsTabActive()) startLogPoll();
+}
+
+async function bootstrapAuth() {
+  try {
+    const response = await fetch('/api/auth/status');
+    const auth = await response.json();
+    if (auth.authenticated) showApp(auth);
+    else showLogin();
+  } catch (_) {
+    showLogin('Сервис недоступен. Проверьте подключение к роутеру.');
+  }
+}
+
+document.getElementById('login-form')?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = document.getElementById('login-submit');
+  const error = document.getElementById('login-error');
+  button.disabled = true;
+  button.textContent = 'Проверка...';
+  error.hidden = true;
+  try {
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        login: document.getElementById('login-name').value,
+        password: document.getElementById('login-password').value,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Не удалось войти');
+    showApp(data);
+  } catch (e) {
+    error.textContent = e.message;
+    error.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Войти';
+  }
+});
+
+document.getElementById('header-logout')?.addEventListener('click', async () => {
+  try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+  showLogin();
+});
 
 // ---------- tabs ----------
 
@@ -1325,6 +1410,23 @@ const SINGBOX_LOG_LEVEL_OPTIONS = [
 
 const SETTINGS_SCHEMA = [
   {
+    id: 'access',
+    title: 'Доступ',
+    description: 'Защита панели управления VLESS Manager.',
+    groups: [
+      {
+        title: 'Вход в панель',
+        description: 'Используются учётные данные панели управления Keenetic. Пароль не сохраняется.',
+        items: [
+          { key: 'auth_enabled', label: 'Требовать вход', type: 'bool',
+            hint: 'После включения все страницы и API будут доступны только после авторизации' },
+          { key: 'auth_session_ttl_hours', label: 'Срок сессии', unit: 'ч', type: 'int', min: 1, max: 720,
+            hint: 'При активной работе срок автоматически продлевается' },
+        ],
+      },
+    ],
+  },
+  {
     id: 'vpn',
     title: 'VPN',
     description: 'Как выбрать сервер для подключения.',
@@ -1542,6 +1644,8 @@ function settingsSectionChangedCount(section) {
 
 function settingsSectionSummary(section) {
   switch (section.id) {
+  case 'access':
+    return settingsDraft?.auth_enabled ? 'вход включён' : 'без входа';
   case 'vpn':
     return settingsDraft?.ping_selection_mode === 'fastest' ? 'Все подписки' : 'По приоритету';
   case 'updates':
@@ -2090,11 +2194,13 @@ document.getElementById('btn-settings-save')?.addEventListener('click', async ()
     return;
   }
   try {
+    const authModeChanged = settingsCurrent.auth_enabled !== settingsDraft.auth_enabled;
     settingsCurrent = await api('PATCH', '/settings', settingsDraft);
     settingsDraft = structuredClone(settingsCurrent);
     toast('Настройки сохранены');
     renderSettings();
     updateSettingsSavebar();
+    if (authModeChanged) await bootstrapAuth();
   } catch (e) {
     toast(e.message, 'err');
   }
@@ -2121,12 +2227,7 @@ document.getElementById('btn-settings-cancel')?.addEventListener('click', () => 
 
 // ---------- bootstrap ----------
 
-startStatusPoll();
-startAppUpdateStatusPoll();
-const initialTab = window.location.hash.replace(/^#/, '');
-if (!activateTab(initialTab || 'status', false)) activateTab('status', false);
 window.addEventListener('hashchange', () => {
   activateTab(window.location.hash.replace(/^#/, ''), false);
 });
-loadVersion();
-loadPingCache();
+bootstrapAuth();

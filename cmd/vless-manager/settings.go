@@ -15,6 +15,12 @@ import (
 // them through (*Config).effectiveSettings() so a half-populated user config
 // transparently inherits the rest.
 type AppSettings struct {
+	// --- Web access ---
+	// Credentials are never stored here. When enabled, the login form verifies
+	// the supplied credentials against Keenetic's own /auth endpoint.
+	AuthEnabled         bool `json:"auth_enabled"`
+	AuthSessionTTLHours int  `json:"auth_session_ttl_hours"`
+
 	// --- Failover controller ---
 	FailoverOuterIntervalSec  int    `json:"failover_outer_interval_sec"`  // outer probes period
 	FailoverHealthIntervalSec int    `json:"failover_health_interval_sec"` // VPN-through probe period
@@ -84,6 +90,9 @@ type AppSettings struct {
 // pre-Settings config.json transparently picks these up.
 func defaultSettings() AppSettings {
 	return AppSettings{
+		AuthEnabled:         false,
+		AuthSessionTTLHours: 24,
+
 		FailoverOuterIntervalSec:  30,
 		FailoverHealthIntervalSec: 10,
 		FailoverHysteresis:        2,
@@ -136,6 +145,7 @@ func (s AppSettings) validate() error {
 		min, max int
 	}
 	rules := []intRule{
+		{"auth_session_ttl_hours", s.AuthSessionTTLHours, 1, 720},
 		{"failover_outer_interval_sec", s.FailoverOuterIntervalSec, 5, 3600},
 		{"failover_health_interval_sec", s.FailoverHealthIntervalSec, 10, 3600},
 		{"failover_hysteresis", s.FailoverHysteresis, 1, 20},
@@ -233,6 +243,10 @@ func oneOf(value string, allowed ...string) bool {
 func (s *AppSettings) fillDefaults() bool {
 	d := defaultSettings()
 	changed := false
+	if s.AuthSessionTTLHours <= 0 {
+		s.AuthSessionTTLHours = d.AuthSessionTTLHours
+		changed = true
+	}
 	if s.FailoverOuterIntervalSec <= 0 {
 		s.FailoverOuterIntervalSec = d.FailoverOuterIntervalSec
 		changed = true

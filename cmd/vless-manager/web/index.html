@@ -10,7 +10,23 @@
 </head>
 <body>
 
-<div id="app">
+<main class="login-screen" id="login-screen" hidden>
+  <form class="login-card" id="login-form">
+    <img class="login-mark" src="favicon.svg" alt="">
+    <div class="login-heading">
+      <h1>VLESS Manager</h1>
+      <p>Войдите с учётной записью панели управления Keenetic.</p>
+    </div>
+    <label for="login-name">Логин</label>
+    <input id="login-name" name="login" type="text" autocomplete="username" required autofocus>
+    <label for="login-password">Пароль</label>
+    <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+    <div class="login-error" id="login-error" role="alert" hidden></div>
+    <button class="btn btn-primary login-submit" id="login-submit" type="submit">Войти</button>
+  </form>
+</main>
+
+<div id="app" hidden>
   <header>
     <img class="brand-mark" src="favicon.svg" alt="">
     <h1>VLESS Manager</h1>
@@ -20,6 +36,7 @@
       <span id="header-update-text">Доступно обновление</span>
       <span class="header-update-arrow" aria-hidden="true">→</span>
     </button>
+    <button type="button" class="header-logout" id="header-logout" title="Завершить сеанс" hidden>Выйти</button>
   </header>
 
   <div class="tabs">
@@ -264,6 +281,7 @@
           <option value="priority">Приоритеты</option>
           <option value="routing">Маршрутизация</option>
           <option value="update">Обновления</option>
+          <option value="auth">Доступ</option>
           <option value="sing-box">sing-box</option>
         </select>
         <input id="logs-search" type="search" placeholder="Событие, сервер, ошибка или op_id" aria-label="Поиск по журналу">

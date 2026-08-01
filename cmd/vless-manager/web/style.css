@@ -23,6 +23,38 @@ body {
   min-height: 100vh;
 }
 
+[hidden] { display: none !important; }
+
+.login-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.login-card {
+  width: min(100%, 380px);
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg2);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
+}
+.login-mark { width: 44px; height: 44px; border-radius: 8px; margin-bottom: 18px; }
+.login-heading { margin-bottom: 24px; }
+.login-heading h1 { font-size: 22px; font-weight: 650; margin-bottom: 7px; }
+.login-heading p { color: var(--text2); line-height: 1.5; }
+.login-card label { display: block; margin: 14px 0 7px; color: var(--text2); font-size: 12px; font-weight: 600; }
+.login-card input { width: 100%; min-height: 42px; }
+.login-submit { width: 100%; min-height: 42px; margin-top: 20px; }
+.login-error {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--red);
+  background: rgba(248, 113, 113, 0.08);
+  color: var(--red);
+  line-height: 1.4;
+}
+
 .app-footer {
   margin-top: 16px;
   padding: 8px 4px;
@@ -90,6 +122,20 @@ header .badge {
   box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.12);
 }
 .header-update-arrow { font-size: 14px; line-height: 1; }
+.header-logout {
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: auto;
+}
+.header-logout:hover { border-color: var(--accent); color: var(--text); }
+.header-update-badge:not([hidden]) + .header-logout { margin-left: 0; }
 
 .tabs {
   display: flex;
