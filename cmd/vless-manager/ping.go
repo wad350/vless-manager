@@ -211,11 +211,15 @@ func containsServerGroup(servers []VLESSServer) bool {
 	return false
 }
 
-// pingServerGroups probes every distinct physical endpoint once and derives a
-// logical profile result from its fastest reachable member. Provider auto
-// profiles heavily overlap; probing each profile independently would turn 50
-// endpoints into hundreds of temporary sing-box instances on the router.
-func pingServerGroups(ctx context.Context, servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
+// pingWorkUnitCount returns the number of physical endpoints that will be
+// probed. Logical provider profiles may share the same members, so counting
+// profiles makes the progress indicator appear frozen while their deduplicated
+// endpoints are being checked.
+func pingWorkUnitCount(servers []VLESSServer) int {
+	return len(physicalPingServers(servers))
+}
+
+func physicalPingServers(servers []VLESSServer) []VLESSServer {
 	leaves := make([]VLESSServer, 0, len(servers))
 	seen := make(map[string]bool)
 	for _, srv := range servers {
@@ -224,13 +228,30 @@ func pingServerGroups(ctx context.Context, servers []VLESSServer, timeout time.D
 			members = []VLESSServer{srv}
 		}
 		for _, member := range members {
-			if !seen[member.ID] {
-				seen[member.ID] = true
-				leaves = append(leaves, member)
+			key := member.ID
+			if key == "" {
+				key = fmt.Sprintf("%s:%d|%s|%s|%s", member.Address, member.Port, member.UUID, member.Network, member.Security)
 			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			leaves = append(leaves, member)
 		}
 	}
-	leafResults := pingBatchViaSingBoxContext(ctx, leaves, timeout, testURL, maxParallel, nil)
+	return leaves
+}
+
+// pingServerGroups probes every distinct physical endpoint once and derives a
+// logical profile result from its fastest reachable member. Provider auto
+// profiles heavily overlap; probing each profile independently would turn 50
+// endpoints into hundreds of temporary sing-box instances on the router.
+func pingServerGroups(ctx context.Context, servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
+	leaves := physicalPingServers(servers)
+	// Forward physical endpoint completions immediately. Waiting until every
+	// leaf is done before reporting logical profiles leaves the UI at 0/N for
+	// the entire batch and incorrectly looks like a hung selection.
+	leafResults := pingBatchViaSingBoxContext(ctx, leaves, timeout, testURL, maxParallel, onDone)
 	byID := make(map[string]PingResult, len(leafResults))
 	for _, result := range leafResults {
 		byID[result.ServerID] = result
@@ -256,9 +277,6 @@ func pingServerGroups(ctx context.Context, servers []VLESSServer, timeout time.D
 				result.Error = "ни один узел профиля не отвечает"
 			}
 			results[i] = result
-		}
-		if onDone != nil {
-			onDone(i, results[i])
 		}
 	}
 	return results

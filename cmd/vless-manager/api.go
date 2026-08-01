@@ -165,7 +165,7 @@ func (s *apiServer) runPingAllNamed(servers []VLESSServer, group string) []PingR
 	s.pingMu.Lock()
 	s.pingProgress = PingProgress{
 		Running:   true,
-		Total:     len(servers),
+		Total:     pingWorkUnitCount(servers),
 		Group:     group,
 		StartedAt: time.Now(),
 	}
@@ -174,7 +174,7 @@ func (s *apiServer) runPingAllNamed(servers []VLESSServer, group string) []PingR
 	// WAN bypass rules so temp sing-box connections hit the VLESS servers
 	// directly, not through the currently-active tunnel.
 	seen := map[string]bool{}
-	for _, srv := range servers {
+	for _, srv := range physicalPingServers(servers) {
 		for _, ip := range ResolveAddrs(srv.Address) {
 			if !seen[ip] {
 				seen[ip] = true
@@ -258,6 +258,7 @@ func (s *apiServer) runPingAllNamed(servers []VLESSServer, group string) []PingR
 			}
 			s.pingMu.Lock()
 			s.pingProgress.Done++
+			s.pingProgress.Current = r.ServerName
 			if r.LatencyMS >= 0 {
 				s.pingProgress.Reachable++
 			}

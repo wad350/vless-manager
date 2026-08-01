@@ -34,6 +34,17 @@ func TestPreferGroupMemberMovesWinnerFirst(t *testing.T) {
 	}
 }
 
+func TestPingWorkUnitCountDeduplicatesGroupMembers(t *testing.T) {
+	servers := []VLESSServer{
+		{ID: "profile-a", Members: []VLESSServer{{ID: "shared"}, {ID: "only-a"}}},
+		{ID: "profile-b", Members: []VLESSServer{{ID: "shared"}, {ID: "only-b"}}},
+		{ID: "standalone"},
+	}
+	if got := pingWorkUnitCount(servers); got != 4 {
+		t.Fatalf("pingWorkUnitCount()=%d, want 4", got)
+	}
+}
+
 func TestRunPingAllHandlesIncompatibleServer(t *testing.T) {
 	cfg := defaultConfig()
 	server := VLESSServer{ID: "unsupported", Name: "unsupported", Address: "127.0.0.1", Port: 443, Network: "mystery"}
