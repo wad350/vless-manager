@@ -3,14 +3,14 @@ module vless-manager
 go 1.24.7
 
 require (
-	github.com/sagernet/sing v0.8.11
-	github.com/sagernet/sing-box v1.13.14
+	github.com/sagernet/sing v0.8.12-0.20260726145744-ef2df370afca
+	github.com/sagernet/sing-box v1.13.15
 	golang.org/x/net v0.50.0
 )
 
 require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
-	github.com/caddyserver/certmagic v0.25.2 // indirect
+	github.com/caddyserver/certmagic v0.25.3-0.20260421143802-60d9d8b415d6 // indirect
 	github.com/caddyserver/zerossl v0.1.5 // indirect
 	github.com/database64128/netx-go v0.1.1 // indirect
 	github.com/database64128/tfo-go/v2 v2.3.2 // indirect
@@ -45,7 +45,7 @@ require (
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a // indirect
 	github.com/sagernet/nftables v0.3.0-mod.2 // indirect
 	github.com/sagernet/sing-mux v0.3.5 // indirect
-	github.com/sagernet/sing-tun v0.8.11 // indirect
+	github.com/sagernet/sing-tun v0.8.12-0.20260727151122-3a09076491df // indirect
 	github.com/sagernet/sing-vmess v0.2.8-0.20250909125414-3aed155119a1 // indirect
 	github.com/sagernet/smux v1.5.50-sing-box-mod.1 // indirect
 	github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854 // indirect

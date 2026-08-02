@@ -1,12 +1,12 @@
 # ── Project metadata ──────────────────────────────────────────────────────────
-VERSION      := 1.16.1
+VERSION      := 1.16.2
 ARCH         := mipsel-3.4
 BUILD_DATE   := $(shell date -u +%Y-%m-%d)
 
 # ── Embedded sing-box ─────────────────────────────────────────────────────────
 # Official sing-box is embedded as a Go library (singbox_src/).
 # No separate binary — saves ~15 MB RSS on the 124 MB MT7621 router.
-SINGBOX_TAG  := v1.13.14
+SINGBOX_TAG  := v1.13.15
 BUILD_TAGS   := with_utls
 UPDATE_REPOSITORY ?= wad350/vless-manager
 

@@ -51,7 +51,7 @@ make ipk
 ```
 
 Готовый пакет появится в `build/`. В бинарник встраиваются WebUI и sing-box
-`v1.13.14`; отдельный пакет sing-box не требуется.
+`v1.13.15`; отдельный пакет sing-box не требуется.
 
 ## Установка
 
@@ -69,7 +69,7 @@ curl -fsSL https://raw.githubusercontent.com/wad350/vless-manager/main/install.s
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/wad350/vless-manager/main/install.sh | \
-  VLESS_MANAGER_VERSION=1.16.1 sh
+  VLESS_MANAGER_VERSION=1.16.2 sh
 ```
 
 При установке скачанного IPK вручную:
