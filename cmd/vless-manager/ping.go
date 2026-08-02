@@ -115,10 +115,18 @@ func pingViaSOCKSContext(ctx context.Context, srv *VLESSServer, socksPort int, t
 		res.Error = err.Error()
 		return res
 	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if !pingHTTPStatusOK(resp.StatusCode) {
+		res.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		return res
+	}
 	res.LatencyMS = time.Since(start).Milliseconds()
 	return res
+}
+
+func pingHTTPStatusOK(status int) bool {
+	return status >= http.StatusOK && status < http.StatusBadRequest
 }
 
 // pingBatchViaSingBox tests each server with a real VLESS connection by

@@ -225,9 +225,7 @@ func (u *appUpdater) nextAutoCheckDelay(now time.Time) time.Duration {
 func (u *appUpdater) runAutoChecks() {
 	for {
 		time.Sleep(u.nextAutoCheckDelay(time.Now()))
-		ctx, cancel := context.WithTimeout(context.Background(), updateCheckTimeout)
-		_, err := u.check(ctx)
-		cancel()
+		_, err := u.checkWithSource(context.Background(), "background")
 		if err != nil {
 			u.api.pm.event(serviceLogWarn, "update", "check.failed",
 				"автоматическая проверка обновлений не выполнена; сохранён предыдущий результат",
@@ -264,6 +262,9 @@ func (u *appUpdater) setInstallProgress(
 		status.TotalBytes = total
 		status.BytesPerSecond = bytesPerSecond
 	})
+	u.api.operations.Progress("app-update", operationProgress{
+		Done: progress, Total: 100, Message: message,
+	})
 }
 
 func updateStateMessage(state string) string {
@@ -286,6 +287,43 @@ func updateStateMessage(state string) string {
 }
 
 func (u *appUpdater) check(ctx context.Context) (UpdateStatus, error) {
+	return u.checkWithSource(ctx, "manual")
+}
+
+func (u *appUpdater) checkWithSource(ctx context.Context, source string) (UpdateStatus, error) {
+	var status UpdateStatus
+	var checkErr error
+	dedupeKey := ""
+	if source == "background" {
+		dedupeKey = "app-update-check"
+	}
+	err := u.api.operations.Run(ctx, operationRequest{
+		Kind:        "app-update-check",
+		Title:       "Проверка обновления",
+		Source:      source,
+		DedupeKey:   dedupeKey,
+		Cancellable: true,
+		StallLimit:  45 * time.Second,
+	}, func(runCtx context.Context, report func(operationProgress)) error {
+		report(operationProgress{Total: 1, Message: "Проверяем GitHub Releases"})
+		checkCtx, cancel := context.WithTimeout(runCtx, updateCheckTimeout)
+		defer cancel()
+		status, checkErr = u.checkUncoordinated(checkCtx)
+		if checkErr == nil {
+			report(operationProgress{Done: 1, Total: 1, Message: "Проверка завершена"})
+		}
+		return checkErr
+	})
+	if err != nil {
+		if checkErr != nil {
+			return status, checkErr
+		}
+		return u.snapshot(), err
+	}
+	return status, nil
+}
+
+func (u *appUpdater) checkUncoordinated(ctx context.Context) (UpdateStatus, error) {
 	if !u.begin("checking") {
 		return u.snapshot(), errors.New("проверка обновления уже выполняется")
 	}
@@ -328,7 +366,22 @@ func (u *appUpdater) install(ctx context.Context) (UpdateStatus, error) {
 	if !u.begin("downloading") {
 		return u.snapshot(), errors.New("обновление уже выполняется")
 	}
-	return u.installStarted(ctx)
+	var status UpdateStatus
+	var installErr error
+	err := u.api.operations.Run(ctx, operationRequest{
+		Kind:        "app-update",
+		Title:       "Установка обновления",
+		Source:      "manual",
+		Cancellable: true,
+		StallLimit:  90 * time.Second,
+	}, func(runCtx context.Context, report func(operationProgress)) error {
+		status, installErr = u.installStarted(runCtx)
+		return installErr
+	})
+	if err != nil && installErr == nil {
+		return u.failInstall(err)
+	}
+	return status, installErr
 }
 
 func (u *appUpdater) startInstall() (UpdateStatus, error) {
@@ -336,9 +389,21 @@ func (u *appUpdater) startInstall() (UpdateStatus, error) {
 		return u.snapshot(), errors.New("обновление уже выполняется")
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), updateFetchTimeout)
-		defer cancel()
-		_, _ = u.installStarted(ctx)
+		err := u.api.operations.Run(context.Background(), operationRequest{
+			Kind:        "app-update",
+			Title:       "Установка обновления",
+			Source:      "manual",
+			Cancellable: true,
+			StallLimit:  90 * time.Second,
+		}, func(runCtx context.Context, report func(operationProgress)) error {
+			installCtx, cancel := context.WithTimeout(runCtx, updateFetchTimeout)
+			defer cancel()
+			_, installErr := u.installStarted(installCtx)
+			return installErr
+		})
+		if err != nil && u.snapshot().State != "error" {
+			_, _ = u.failInstall(err)
+		}
 	}()
 	return u.snapshot(), nil
 }

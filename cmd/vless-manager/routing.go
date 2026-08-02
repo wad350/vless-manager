@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -229,20 +230,70 @@ func requireRouteCommand(stage, name string, args ...string) error {
 // chain, so an existing chain plus both attachment points and the policy route
 // are sufficient for the lightweight periodic guard.
 func GlobalRouteReady() bool {
-	if _, err := run("iptables", "-t", "mangle", "-S", vlessMangleChain); err != nil {
+	return globalRouteReady(run)
+}
+
+func globalRouteReady(command func(string, ...string) (string, error)) bool {
+	if _, err := command("iptables", "-t", "mangle", "-S", vlessMangleChain); err != nil {
 		return false
 	}
-	if _, err := run("iptables", "-t", "mangle", "-C", "OUTPUT", "-j", vlessMangleChain); err != nil {
+	if _, err := command("iptables", "-t", "mangle", "-C", "OUTPUT", "-j", vlessMangleChain); err != nil {
 		return false
 	}
-	if _, err := run("iptables", "-t", "mangle", "-C", "PREROUTING",
-		"-i", chooseLanIface(), "-j", vlessMangleChain); err != nil {
+	lanIface := chooseLanIface()
+	if _, err := command("iptables", "-t", "mangle", "-C", "PREROUTING",
+		"-i", lanIface, "-j", vlessMangleChain); err != nil {
 		return false
 	}
-	if _, err := run("ip", "route", "show", "table", tunRtTable, "default", "dev", tunIface); err != nil {
+	mark := fmt.Sprintf("0x%x/0xffffffff", tunFwmark)
+	if _, err := command("iptables", "-t", "mangle", "-C", vlessMangleChain,
+		"-j", "MARK", "--set-mark", mark); err != nil {
+		return false
+	}
+	for _, check := range [][]string{
+		{"iptables", "-C", "INPUT", "-i", tunIface, "-j", "ACCEPT"},
+		{"iptables", "-C", "FORWARD", "-i", lanIface, "-o", tunIface, "-j", "ACCEPT"},
+		{"iptables", "-C", "FORWARD", "-i", tunIface, "-j", "ACCEPT"},
+		{"iptables", "-t", "nat", "-C", "POSTROUTING", "-o", tunIface, "-j", "RETURN"},
+	} {
+		if _, err := command(check[0], check[1:]...); err != nil {
+			return false
+		}
+	}
+	rules, err := command("ip", "rule", "show")
+	if err != nil || !outputLineHasTokens(rules, "fwmark", fmt.Sprintf("0x%x", tunFwmark), "lookup", tunRtTable) ||
+		!outputLineHasTokens(rules, "fwmark", fmt.Sprintf("0x%x", WANFwmark), "lookup", "main") {
+		return false
+	}
+	routes, err := command("ip", "route", "show", "table", tunRtTable)
+	if err != nil || !outputLineHasTokens(routes, "default", "dev", tunIface) {
 		return false
 	}
 	return true
+}
+
+func outputLineHasTokens(output string, required ...string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		matched := true
+		for _, token := range required {
+			found := false
+			for _, field := range fields {
+				if field == token {
+					found = true
+					break
+				}
+			}
+			if !found {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 // DisableGlobalRoute removes everything EnableGlobalRoute installed.

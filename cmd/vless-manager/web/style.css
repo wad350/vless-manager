@@ -137,6 +137,64 @@ header .badge {
 .header-logout:hover { border-color: var(--accent); color: var(--text); }
 .header-update-badge:not([hidden]) + .header-logout { margin-left: 0; }
 
+.operation-bar {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 58px;
+  margin: -8px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(94, 129, 244, 0.42);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: rgba(94, 129, 244, 0.08);
+}
+.operation-bar.deferred {
+  border-color: rgba(251, 191, 36, 0.35);
+  border-left-color: var(--yellow);
+  background: rgba(251, 191, 36, 0.06);
+}
+.operation-bar.stalled { border-left-color: var(--red); }
+.operation-spinner {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 2px solid rgba(124, 156, 255, 0.25);
+  border-top-color: var(--accent2);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.operation-spinner.paused {
+  border-color: rgba(251, 191, 36, 0.32);
+  border-top-color: var(--yellow);
+  animation: none;
+}
+.operation-copy { flex: 1; min-width: 0; }
+.operation-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.operation-title-row strong { font-size: 13px; font-weight: 650; }
+.operation-title-row span,
+.operation-message { color: var(--text2); font-size: 11px; }
+.operation-message { margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.operation-track { height: 3px; margin-top: 7px; overflow: hidden; background: var(--border); }
+.operation-track span { display: block; width: 0; height: 100%; background: var(--accent); transition: width 0.2s ease; }
+.operation-track.indeterminate span { width: 34% !important; animation: operation-slide 1.25s ease-in-out infinite; }
+.operation-queue {
+  flex-shrink: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text2);
+  font-size: 10px;
+}
+@keyframes operation-slide { from { transform: translateX(-110%); } to { transform: translateX(300%); } }
+
+@media (max-width: 600px) {
+  .operation-bar { align-items: flex-start; flex-wrap: wrap; }
+  .operation-copy { min-width: calc(100% - 32px); }
+  .operation-queue { margin-left: 29px; }
+  .operation-bar .btn { margin-left: auto; }
+}
+
 .tabs {
   display: flex;
   gap: 4px;

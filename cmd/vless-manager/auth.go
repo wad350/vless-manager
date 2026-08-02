@@ -131,7 +131,13 @@ type authSession struct {
 type authAttempt struct {
 	Failures   int
 	BlockedTil time.Time
+	LastSeen   time.Time
 }
+
+const (
+	maxAuthSessions = 128
+	maxAuthAttempts = 256
+)
 
 type authService struct {
 	mu            sync.Mutex
@@ -156,8 +162,13 @@ func (a *authService) createSession(login string, ttl time.Duration) (string, au
 		return "", authSession{}, err
 	}
 	token := hex.EncodeToString(tokenBytes)
-	session := authSession{Login: login, ExpiresAt: a.now().Add(ttl)}
+	now := a.now()
+	session := authSession{Login: login, ExpiresAt: now.Add(ttl)}
 	a.mu.Lock()
+	a.cleanupLocked(now)
+	if len(a.sessions) >= maxAuthSessions {
+		a.deleteOldestSessionLocked()
+	}
 	a.sessions[token] = session
 	a.mu.Unlock()
 	return token, session, nil
@@ -169,13 +180,15 @@ func (a *authService) session(token string, ttl time.Duration) (authSession, boo
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	now := a.now()
+	a.cleanupLocked(now)
 	session, ok := a.sessions[token]
-	if !ok || !session.ExpiresAt.After(a.now()) {
+	if !ok || !session.ExpiresAt.After(now) {
 		delete(a.sessions, token)
 		return authSession{}, false
 	}
 	// Sliding expiration keeps an actively used local admin session alive.
-	session.ExpiresAt = a.now().Add(ttl)
+	session.ExpiresAt = now.Add(ttl)
 	a.sessions[token] = session
 	return session, true
 }
@@ -189,8 +202,10 @@ func (a *authService) deleteSession(token string) {
 func (a *authService) blocked(client string) (time.Duration, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	now := a.now()
+	a.cleanupLocked(now)
 	attempt := a.attempts[client]
-	remaining := attempt.BlockedTil.Sub(a.now())
+	remaining := attempt.BlockedTil.Sub(now)
 	if remaining > 0 {
 		return remaining, true
 	}
@@ -203,13 +218,55 @@ func (a *authService) blocked(client string) (time.Duration, bool) {
 func (a *authService) failed(client string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	now := a.now()
+	a.cleanupLocked(now)
+	if _, exists := a.attempts[client]; !exists && len(a.attempts) >= maxAuthAttempts {
+		a.deleteOldestAttemptLocked()
+	}
 	attempt := a.attempts[client]
 	attempt.Failures++
+	attempt.LastSeen = now
 	if attempt.Failures >= 5 {
-		attempt.BlockedTil = a.now().Add(30 * time.Second)
+		attempt.BlockedTil = now.Add(30 * time.Second)
 		attempt.Failures = 0
 	}
 	a.attempts[client] = attempt
+}
+
+func (a *authService) cleanupLocked(now time.Time) {
+	for token, session := range a.sessions {
+		if !session.ExpiresAt.After(now) {
+			delete(a.sessions, token)
+		}
+	}
+	for client, attempt := range a.attempts {
+		if (!attempt.BlockedTil.IsZero() && !attempt.BlockedTil.After(now)) ||
+			(attempt.BlockedTil.IsZero() && !attempt.LastSeen.IsZero() && now.Sub(attempt.LastSeen) > 10*time.Minute) {
+			delete(a.attempts, client)
+		}
+	}
+}
+
+func (a *authService) deleteOldestSessionLocked() {
+	var oldestToken string
+	var oldest time.Time
+	for token, session := range a.sessions {
+		if oldestToken == "" || session.ExpiresAt.Before(oldest) {
+			oldestToken, oldest = token, session.ExpiresAt
+		}
+	}
+	delete(a.sessions, oldestToken)
+}
+
+func (a *authService) deleteOldestAttemptLocked() {
+	var oldestClient string
+	var oldest time.Time
+	for client, attempt := range a.attempts {
+		if oldestClient == "" || attempt.LastSeen.Before(oldest) {
+			oldestClient, oldest = client, attempt.LastSeen
+		}
+	}
+	delete(a.attempts, oldestClient)
 }
 
 func (a *authService) succeeded(client string) {

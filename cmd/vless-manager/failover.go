@@ -292,9 +292,9 @@ func (fc *failoverController) replaceStoppedTunnel(st AppSettings, opID, trigger
 	}
 	time.Sleep(fc.swapRestartDelay)
 	fc.api.mu.RLock()
-	cfgSnap := *fc.api.cfg
+	cfgSnap := cloneConfig(fc.api.cfg)
 	fc.api.mu.RUnlock()
-	if err := fc.startSelectedFn(&cfgSnap); err != nil {
+	if err := fc.startSelectedFn(cfgSnap); err != nil {
 		fc.api.pm.event(serviceLogError, "failover", "swap.failed",
 			"VPN не запустился на выбранном сервере",
 			field("op_id", opID),

@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newHandlerTestAPI(t *testing.T) *apiServer {
@@ -46,6 +49,7 @@ func TestReadOnlyAPIEndpoints(t *testing.T) {
 		"/api/traffic",
 		"/api/version",
 		"/api/update",
+		"/api/operations",
 		"/api/failover",
 		"/api/settings",
 		"/api/settings/defaults",
@@ -61,6 +65,52 @@ func TestReadOnlyAPIEndpoints(t *testing.T) {
 				t.Fatalf("%s returned invalid JSON: %s", path, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestOperationsAPICancelsActiveOperation(t *testing.T) {
+	api := newHandlerTestAPI(t)
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- api.operations.Run(context.Background(), operationRequest{
+			Kind: "ping", Title: "Ping", Cancellable: true,
+		}, func(ctx context.Context, report func(operationProgress)) error {
+			report(operationProgress{Done: 1, Total: 4, Message: "checking"})
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("operation did not start")
+	}
+
+	rec := apiRequest(t, api, http.MethodGet, "/api/operations", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var snapshot operationSnapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Active == nil || snapshot.Active.Progress != 25 {
+		t.Fatalf("unexpected active snapshot: %+v", snapshot.Active)
+	}
+
+	rec = apiRequest(t, api, http.MethodDelete, "/api/operations", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, errOperationCancelled) {
+			t.Fatalf("cancel error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled operation did not stop")
 	}
 }
 

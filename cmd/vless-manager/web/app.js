@@ -88,12 +88,14 @@ async function api(method, path, body) {
 }
 
 let appBootstrapped = false;
+let operationsInterval;
 
 function stopAppPolling() {
   clearInterval(statusInterval); statusInterval = null;
   clearInterval(trafficInterval); trafficInterval = null;
   clearInterval(logInterval); logInterval = null;
   clearInterval(appUpdateStatusInterval); appUpdateStatusInterval = null;
+  clearInterval(operationsInterval); operationsInterval = null;
 }
 
 function showLogin(message = '') {
@@ -121,9 +123,66 @@ function showApp(auth) {
   }
   startStatusPoll();
   startAppUpdateStatusPoll();
+  startOperationsPoll();
   if (isStatusTabActive()) startTrafficPoll();
   if (isLogsTabActive()) startLogPoll();
 }
+
+function startOperationsPoll() {
+  fetchOperations();
+  clearInterval(operationsInterval);
+  operationsInterval = setInterval(fetchOperations, 1500);
+}
+
+async function fetchOperations() {
+  try {
+    renderOperations(await api('GET', '/operations'));
+  } catch (_) {}
+}
+
+function renderOperations(snapshot) {
+  const bar = document.getElementById('operation-bar');
+  const active = snapshot?.active;
+  const queue = Array.isArray(snapshot?.queue) ? snapshot.queue : [];
+  const deferred = !active && queue.find(item => item.state === 'deferred');
+  const shown = active || deferred;
+  if (!shown) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  bar.classList.toggle('deferred', !active);
+  bar.classList.toggle('stalled', shown.state === 'stalled');
+  document.getElementById('operation-title').textContent = shown.title || 'Системная операция';
+  const message = shown.current
+    ? `${shown.message || 'Выполняется'} · ${shown.current}`
+    : shown.message || (active ? 'Выполняется' : 'Ожидает снижения нагрузки');
+  document.getElementById('operation-message').textContent = message;
+  const progress = Math.max(0, Math.min(100, Number(shown.progress || 0)));
+  const count = shown.total > 0 ? `${shown.done || 0}/${shown.total}` : '';
+  document.getElementById('operation-progress-label').textContent = count || (progress ? `${progress}%` : '');
+  document.getElementById('operation-progress-fill').style.width = `${progress}%`;
+  document.getElementById('operation-track').classList.toggle('indeterminate', !shown.total);
+  document.getElementById('operation-spinner').classList.toggle('paused', !active);
+  const queuedCount = active ? queue.length : Math.max(0, queue.length - 1);
+  const queueBadge = document.getElementById('operation-queue');
+  queueBadge.hidden = queuedCount === 0;
+  queueBadge.textContent = `В очереди: ${queuedCount}`;
+  const cancel = document.getElementById('operation-cancel');
+  cancel.hidden = !active?.cancellable;
+  cancel.disabled = !!active?.cancel_requested;
+  cancel.textContent = active?.cancel_requested ? 'Останавливается' : 'Отменить';
+}
+
+document.getElementById('operation-cancel')?.addEventListener('click', async event => {
+  event.currentTarget.disabled = true;
+  try {
+    renderOperations(await api('DELETE', '/operations'));
+  } catch (e) {
+    toast(e.message, 'err');
+    fetchOperations();
+  }
+});
 
 async function bootstrapAuth() {
   try {

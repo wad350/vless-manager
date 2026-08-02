@@ -137,9 +137,9 @@ func main() {
 			return
 		}
 		api.mu.RLock()
-		cfgSnap := *api.cfg
+		cfgSnap := cloneConfig(api.cfg)
 		api.mu.RUnlock()
-		if err := api.startManagedVPN(&cfgSnap); err != nil {
+		if err := api.startManagedVPN(cfgSnap); err != nil {
 			pm.event(serviceLogError, "manager", "autostart.failed",
 				"автоматический запуск VPN завершился ошибкой",
 				field("error", err))
@@ -201,6 +201,7 @@ func main() {
 	server := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 	}

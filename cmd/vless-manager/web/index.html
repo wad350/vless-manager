@@ -39,6 +39,20 @@
     <button type="button" class="header-logout" id="header-logout" title="Завершить сеанс" hidden>Выйти</button>
   </header>
 
+  <section class="operation-bar" id="operation-bar" hidden aria-live="polite">
+    <span class="operation-spinner" id="operation-spinner" aria-hidden="true"></span>
+    <div class="operation-copy">
+      <div class="operation-title-row">
+        <strong id="operation-title">Системная операция</strong>
+        <span id="operation-progress-label"></span>
+      </div>
+      <div class="operation-message" id="operation-message"></div>
+      <div class="operation-track" id="operation-track"><span id="operation-progress-fill"></span></div>
+    </div>
+    <span class="operation-queue" id="operation-queue" hidden></span>
+    <button type="button" class="btn btn-ghost btn-sm" id="operation-cancel" hidden>Отменить</button>
+  </section>
+
   <div class="tabs">
     <div class="tab active" data-tab="status">Главная</div>
     <div class="tab" data-tab="subscriptions">Подписки</div>

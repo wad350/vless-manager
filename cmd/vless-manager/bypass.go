@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"io"
@@ -83,7 +84,11 @@ func bypassDomainsFor(cfg *Config) []string {
 }
 
 func fetchBypassWhitelist(client *http.Client) ([]string, error) {
-	req, err := http.NewRequest(http.MethodGet, bypassWhitelistURL, nil)
+	return fetchBypassWhitelistContext(context.Background(), client)
+}
+
+func fetchBypassWhitelistContext(ctx context.Context, client *http.Client) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, bypassWhitelistURL, nil)
 	if err != nil {
 		return nil, err
 	}

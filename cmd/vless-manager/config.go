@@ -86,6 +86,42 @@ type BypassCache struct {
 	Source    string    `json:"source,omitempty"`
 }
 
+func cloneVLESSServer(src VLESSServer) VLESSServer {
+	dst := src
+	dst.Xmux = append(json.RawMessage(nil), src.Xmux...)
+	dst.DownloadSettings = append(json.RawMessage(nil), src.DownloadSettings...)
+	dst.Extra = append(json.RawMessage(nil), src.Extra...)
+	if src.XHTTPHeaders != nil {
+		dst.XHTTPHeaders = make(map[string]string, len(src.XHTTPHeaders))
+		for key, value := range src.XHTTPHeaders {
+			dst.XHTTPHeaders[key] = value
+		}
+	}
+	if src.Members != nil {
+		dst.Members = make([]VLESSServer, len(src.Members))
+		for i := range src.Members {
+			dst.Members[i] = cloneVLESSServer(src.Members[i])
+		}
+	}
+	return dst
+}
+
+func cloneConfig(src *Config) *Config {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	dst.Servers = make([]VLESSServer, len(src.Servers))
+	for i := range src.Servers {
+		dst.Servers[i] = cloneVLESSServer(src.Servers[i])
+	}
+	dst.Settings.OpenProbes = append([]string(nil), src.Settings.OpenProbes...)
+	dst.Settings.WhitelistProbes = append([]string(nil), src.Settings.WhitelistProbes...)
+	dst.Settings.BypassDomains = append([]string(nil), src.Settings.BypassDomains...)
+	dst.BypassCache.Domains = append([]string(nil), src.BypassCache.Domains...)
+	return &dst
+}
+
 func defaultConfig() *Config {
 	return &Config{
 		Port:               3001,

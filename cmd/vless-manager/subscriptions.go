@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -145,6 +146,37 @@ type Subscription struct {
 	ExcludedTransports map[string]int `json:"excluded_transports,omitempty"`
 }
 
+func cloneSubscription(src *Subscription) *Subscription {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	dst.Servers = make([]VLESSServer, len(src.Servers))
+	for i := range src.Servers {
+		dst.Servers[i] = cloneVLESSServer(src.Servers[i])
+	}
+	dst.DisabledServerIDs = append([]string(nil), src.DisabledServerIDs...)
+	if src.ExcludedTransports != nil {
+		dst.ExcludedTransports = make(map[string]int, len(src.ExcludedTransports))
+		for key, value := range src.ExcludedTransports {
+			dst.ExcludedTransports[key] = value
+		}
+	}
+	if src.UserInfo != nil {
+		userInfo := *src.UserInfo
+		dst.UserInfo = &userInfo
+	}
+	return &dst
+}
+
+func cloneSubscriptions(src []*Subscription) []*Subscription {
+	dst := make([]*Subscription, len(src))
+	for i := range src {
+		dst[i] = cloneSubscription(src[i])
+	}
+	return dst
+}
+
 func containsServerID(ids []string, id string) bool {
 	for _, disabledID := range ids {
 		if disabledID == id {
@@ -272,14 +304,22 @@ func fetchSubscription(url string) (*Subscription, error) {
 // settings-aware refresh loop. Plain fetchSubscription keeps the 15 s default
 // for compatibility with the few call sites that don't have a Config handy.
 func fetchSubscriptionWithTimeout(url string, timeout time.Duration) (*Subscription, error) {
-	return fetchSubscriptionWithClient(url, subscriptionHTTPClient(timeout, nil))
+	return fetchSubscriptionWithClientContext(context.Background(), url, subscriptionHTTPClient(timeout, nil))
 }
 
 func (s *apiServer) fetchSubscriptionURL(url string) (*Subscription, error) {
-	return s.fetchSubscriptionURLWithTimeout(url, s.settingsSnapshot().SubscriptionFetchTimeout())
+	return s.fetchSubscriptionURLContext(context.Background(), url)
 }
 
 func (s *apiServer) fetchSubscriptionURLWithTimeout(url string, timeout time.Duration) (*Subscription, error) {
+	return s.fetchSubscriptionURLWithTimeoutContext(context.Background(), url, timeout)
+}
+
+func (s *apiServer) fetchSubscriptionURLContext(ctx context.Context, url string) (*Subscription, error) {
+	return s.fetchSubscriptionURLWithTimeoutContext(ctx, url, s.settingsSnapshot().SubscriptionFetchTimeout())
+}
+
+func (s *apiServer) fetchSubscriptionURLWithTimeoutContext(ctx context.Context, url string, timeout time.Duration) (*Subscription, error) {
 	st := s.settingsSnapshot()
 	vpnState := s.failover.State()
 	vpnReady := s.pm.Status().Running && s.pm.TunRunning() && vpnState.VPNHealthOK
@@ -297,7 +337,7 @@ func (s *apiServer) fetchSubscriptionURLWithTimeout(url string, timeout time.Dur
 				field("host", host),
 				field("transport", "vpn"),
 				field("timeout_ms", timeout.Milliseconds()))
-			sub, fetchErr := fetchSubscriptionWithClient(url, subscriptionHTTPClient(timeout, dialer.Dial))
+			sub, fetchErr := fetchSubscriptionWithClientContext(ctx, url, subscriptionHTTPClient(timeout, dialer.Dial))
 			if fetchErr == nil {
 				s.pm.event(serviceLogDebug, "subscription", "fetch.succeeded",
 					"подписка загружена",
@@ -324,7 +364,7 @@ func (s *apiServer) fetchSubscriptionURLWithTimeout(url string, timeout time.Dur
 		field("host", host),
 		field("transport", "wan"),
 		field("timeout_ms", timeout.Milliseconds()))
-	sub, err := fetchSubscriptionWithClient(url, subscriptionHTTPClient(timeout, wanDialer(timeout).Dial))
+	sub, err := fetchSubscriptionWithClientContext(ctx, url, subscriptionHTTPClient(timeout, wanDialer(timeout).Dial))
 	if err != nil {
 		s.pm.event(serviceLogWarn, "subscription", "fetch.failed",
 			"подписка не загружена",
@@ -358,11 +398,15 @@ func subscriptionHTTPClient(timeout time.Duration, dial func(string, string) (ne
 }
 
 func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription, error) {
+	return fetchSubscriptionWithClientContext(context.Background(), url, client)
+}
+
+func fetchSubscriptionWithClientContext(ctx context.Context, url string, client *http.Client) (*Subscription, error) {
 	if subscriptionDeviceID == "" {
 		return nil, fmt.Errorf("subscription device ID is not initialized")
 	}
 	url = normalizeSubscriptionURL(url)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -404,6 +448,7 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 	var parsedServers []VLESSServer
 	placeholderCount := 0
 	unsupportedCount := 0
+	invalidCount := 0
 	unsupportedSeen := make(map[string]bool)
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -413,16 +458,23 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 		if strings.HasPrefix(line, "vless://") {
 			if srv, err := parseVLESSURI(line); err == nil {
 				parsedServers = append(parsedServers, *srv)
+			} else {
+				invalidCount++
 			}
 		}
 	}
 	if len(parsedServers) == 0 {
-		parsedServers = parseXrayJSONServers([]byte(text))
+		var invalidJSON int
+		parsedServers, invalidJSON = parseXrayJSONServersDetailed([]byte(text))
+		invalidCount += invalidJSON
 	}
 
 	servers := make([]VLESSServer, 0, len(parsedServers))
 	seen := make(map[string]bool, len(parsedServers))
 	excludedTransports := make(map[string]int)
+	if invalidCount > 0 {
+		excludedTransports["invalid"] = invalidCount
+	}
 	for _, srv := range parsedServers {
 		if len(srv.Members) > 0 {
 			members := make([]VLESSServer, 0, len(srv.Members))
@@ -478,6 +530,9 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 		if placeholderCount > 0 {
 			return nil, fmt.Errorf("subscription returned only placeholder nodes; provider rejected this client/app")
 		}
+		if invalidCount > 0 {
+			return nil, fmt.Errorf("no valid VLESS servers found in subscription (%d invalid, got %d bytes)", invalidCount, len(body))
+		}
 		return nil, fmt.Errorf("no VLESS servers found in subscription (got %d bytes)", len(body))
 	}
 
@@ -489,7 +544,7 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 		Servers:            servers,
 		UpdatedAt:          time.Now(),
 		UserInfo:           metadata.UserInfo,
-		ExcludedServers:    unsupportedCount,
+		ExcludedServers:    unsupportedCount + invalidCount,
 		ExcludedTransports: excludedTransports,
 	}
 	if metadata.Name != "" {
@@ -636,21 +691,29 @@ type xrayOutbound struct {
 // either one complete config object or an array of configs. Each config can
 // contain several VLESS outbounds (auto-selection and whitelist profiles).
 func parseXrayJSONServers(body []byte) []VLESSServer {
+	servers, _ := parseXrayJSONServersDetailed(body)
+	return servers
+}
+
+func parseXrayJSONServersDetailed(body []byte) ([]VLESSServer, int) {
 	var configs []xraySubscriptionConfig
 	if err := json.Unmarshal(body, &configs); err != nil {
 		var single xraySubscriptionConfig
 		if err := json.Unmarshal(body, &single); err != nil || len(single.Outbounds) == 0 {
-			return nil
+			return nil, 0
 		}
 		configs = []xraySubscriptionConfig{single}
 	}
 
 	servers := make([]VLESSServer, 0, len(configs))
+	invalid := 0
 	for _, cfg := range configs {
 		var members []VLESSServer
 		for _, outbound := range cfg.Outbounds {
 			if strings.EqualFold(outbound.Protocol, "vless") {
-				members = append(members, xrayOutboundServers(cfg.Remarks, 1, outbound)...)
+				parsed, skipped := xrayOutboundServersDetailed(cfg.Remarks, 1, outbound)
+				members = append(members, parsed...)
+				invalid += skipped
 			}
 		}
 		if len(members) == 1 {
@@ -665,10 +728,15 @@ func parseXrayJSONServers(body []byte) []VLESSServer {
 			})
 		}
 	}
-	return servers
+	return servers, invalid
 }
 
 func xrayOutboundServers(remarks string, profileVLESSCount int, outbound xrayOutbound) []VLESSServer {
+	servers, _ := xrayOutboundServersDetailed(remarks, profileVLESSCount, outbound)
+	return servers
+}
+
+func xrayOutboundServersDetailed(remarks string, profileVLESSCount int, outbound xrayOutbound) ([]VLESSServer, int) {
 	stream := outbound.StreamSettings
 	network := normalizeVLESSNetwork(stream.Network)
 	security := strings.ToLower(strings.TrimSpace(stream.Security))
@@ -681,9 +749,11 @@ func xrayOutboundServers(remarks string, profileVLESSCount int, outbound xrayOut
 	}
 
 	var servers []VLESSServer
+	invalid := 0
 	for _, target := range outbound.Settings.VNext {
 		for _, user := range target.Users {
 			if target.Address == "" || target.Port <= 0 || user.ID == "" {
+				invalid++
 				continue
 			}
 			serverName := name
@@ -730,7 +800,7 @@ func xrayOutboundServers(remarks string, profileVLESSCount int, outbound xrayOut
 			servers = append(servers, srv)
 		}
 	}
-	return servers
+	return servers, invalid
 }
 
 func rawJSONFirstString(raw json.RawMessage) string {

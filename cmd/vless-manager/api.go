@@ -44,17 +44,18 @@ type priorityServerGroup struct {
 type apiServer struct {
 	mu sync.RWMutex
 
-	pm        *ProcessManager
-	cfg       *Config
-	subs      []*Subscription
-	cfgPath   string
-	subPath   string
-	mux       *http.ServeMux
-	health    *healthMonitor
-	pingCache *pingCache
-	failover  *failoverController
-	updater   *appUpdater
-	auth      *authService
+	pm         *ProcessManager
+	cfg        *Config
+	subs       []*Subscription
+	cfgPath    string
+	subPath    string
+	mux        *http.ServeMux
+	health     *healthMonitor
+	pingCache  *pingCache
+	failover   *failoverController
+	updater    *appUpdater
+	auth       *authService
+	operations *operationCoordinator
 
 	pingMu       sync.Mutex
 	pingProgress PingProgress
@@ -85,6 +86,7 @@ func newAPIServer(pm *ProcessManager, cfg *Config, subs []*Subscription, cfgPath
 		auth:      newAuthService(newKeeneticAuthenticator("")),
 	}
 	s.failover = newFailoverController(s, cfg.AutoFailover, cfg.AutoTunnelFailover)
+	s.operations = newOperationCoordinator(pm)
 	s.updater = newAppUpdater(s)
 	s.connectStartFn = s.startManagedVPN
 	s.health.SetSettingsSource(s.settingsSnapshot)
@@ -119,6 +121,34 @@ func (s *apiServer) runPingAllNamed(servers []VLESSServer, group string) []PingR
 	if len(servers) == 0 {
 		return nil
 	}
+	var results []PingResult
+	title := "Проверка серверов"
+	if group != "" {
+		title = "Проверка: " + group
+	}
+	err := s.operations.Run(context.Background(), operationRequest{
+		Kind:        "ping",
+		Title:       title,
+		Source:      "manual",
+		Cancellable: true,
+		StallLimit:  75 * time.Second,
+	}, func(ctx context.Context, report func(operationProgress)) error {
+		results = s.runPingAllNamedCore(ctx, servers, group, report)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return nil
+	})
+	if err != nil {
+		s.pm.event(serviceLogWarn, "ping", "batch.not_completed",
+			"проверка серверов не завершена",
+			field("group", group), field("error", err))
+		return nil
+	}
+	return results
+}
+
+func (s *apiServer) runPingAllNamedCore(ctx context.Context, servers []VLESSServer, group string, report func(operationProgress)) []PingResult {
 
 	// Wait for an in-flight cycle. If it covered every requested server, reuse
 	// those freshly completed results. Never return an older cache snapshot:
@@ -137,7 +167,7 @@ func (s *apiServer) runPingAllNamed(servers []VLESSServer, group string) []PingR
 	}
 	s.pingRunID++
 	runID := s.pingRunID
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	s.pingCancel = cancel
 	s.pingMu.Unlock()
 	defer func() {
@@ -175,6 +205,7 @@ func (s *apiServer) runPingAllNamed(servers []VLESSServer, group string) []PingR
 		StartedAt: time.Now(),
 	}
 	s.pingMu.Unlock()
+	report(operationProgress{Total: pingWorkUnitCount(servers), Message: "Подготавливаем проверку серверов"})
 
 	// WAN bypass rules so temp sing-box connections hit the VLESS servers
 	// directly, not through the currently-active tunnel.
@@ -238,6 +269,10 @@ func (s *apiServer) runPingAllNamed(servers []VLESSServer, group string) []PingR
 	s.pingProgress.Done = incompat
 	s.pingProgress.Incompat = incompat
 	s.pingMu.Unlock()
+	report(operationProgress{
+		Done: incompat, Total: pingWorkUnitCount(servers),
+		Message: "Проверяем доступность через реальные туннели",
+	})
 
 	reachable, unreachable := 0, 0
 
@@ -267,7 +302,12 @@ func (s *apiServer) runPingAllNamed(servers []VLESSServer, group string) []PingR
 			if r.LatencyMS >= 0 {
 				s.pingProgress.Reachable++
 			}
+			progress := s.pingProgress
 			s.pingMu.Unlock()
+			report(operationProgress{
+				Done: progress.Done, Total: progress.Total, Current: r.ServerName,
+				Message: fmt.Sprintf("Проверено %d из %d", progress.Done, progress.Total),
+			})
 		}
 
 		st := pingSettings
@@ -470,12 +510,12 @@ func (s *apiServer) startVPNInternal() error {
 		return err
 	}
 	s.mu.RLock()
-	cfgSnap := *s.cfg
+	cfgSnap := cloneConfig(s.cfg)
 	s.mu.RUnlock()
 	if cfgSnap.ActiveServer == "" {
 		return fmt.Errorf("no active server")
 	}
-	return s.startManagedVPN(&cfgSnap)
+	return s.startManagedVPN(cfgSnap)
 }
 
 // startManagedVPN is the single successful-start path. Every caller gets an
@@ -516,7 +556,11 @@ func (s *apiServer) chooseAlternativeServer() string {
 			field("subscription_order", st.PingFailoverOrder))
 		return ""
 	}
-	s.commitSelectedServer(preferGroupMember(*server, result.SelectedMemberID))
+	if err := s.commitSelectedServer(preferGroupMember(*server, result.SelectedMemberID)); err != nil {
+		s.pm.event(serviceLogError, "priority", "failover.selection_persist_failed",
+			"выбранный сервер не сохранён", field("error", err))
+		return ""
+	}
 	s.pm.event(serviceLogInfo, "priority", "failover.selection_succeeded",
 		"выбрана замена нерабочему серверу",
 		field("previous_server_id", activeID),
@@ -526,6 +570,9 @@ func (s *apiServer) chooseAlternativeServer() string {
 }
 
 func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") && r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") && !isPublicAuthPath(r.URL.Path) {
 		settings := s.settingsSnapshot()
 		if settings.AuthEnabled {
@@ -576,6 +623,7 @@ func (s *apiServer) routes() {
 	s.mux.HandleFunc("/api/update", s.handleUpdate)
 	s.mux.HandleFunc("/api/update/check", s.handleUpdateCheck)
 	s.mux.HandleFunc("/api/update/install", s.handleUpdateInstall)
+	s.mux.HandleFunc("/api/operations", s.handleOperations)
 	// On-demand WAN health probe (manual trigger from UI)
 	s.mux.HandleFunc("/api/internet/check", s.handleInternetCheck)
 	// Auto-failover state / toggle
@@ -589,6 +637,21 @@ func (s *apiServer) routes() {
 	s.mux.HandleFunc("/api/settings/defaults", s.handleSettingsDefaults)
 	// Runtime-refreshable copy of the embedded RU bypass whitelist.
 	s.mux.HandleFunc("/api/bypass", s.handleBypass)
+}
+
+func (s *apiServer) handleOperations(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.operations.Snapshot())
+	case http.MethodDelete:
+		if !s.operations.CancelActive() {
+			writeError(w, http.StatusConflict, "активную операцию нельзя отменить")
+			return
+		}
+		writeJSON(w, s.operations.Snapshot())
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "GET or DELETE only")
+	}
 }
 
 func (s *apiServer) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
@@ -759,7 +822,7 @@ func (s *apiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		snap := s.cfg.Settings
-		cfgSnap := *s.cfg
+		cfgSnap := cloneConfig(s.cfg)
 		s.mu.Unlock()
 		s.pm.SetServiceLogLevel(out.ServiceLogLevel)
 		s.failover.ReloadSettings()
@@ -777,9 +840,9 @@ func (s *apiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 			started := time.Now()
 			s.pm.event(serviceLogInfo, "manager", "settings.apply_start",
 				"перезапуск VPN для применения настроек",
-				field("bypass_domains", len(bypassDomainsFor(&cfgSnap))))
+				field("bypass_domains", len(bypassDomainsFor(cfgSnap))))
 			_ = s.pm.Stop()
-			if err := s.startManagedVPN(&cfgSnap); err != nil {
+			if err := s.startManagedVPN(cfgSnap); err != nil {
 				s.pm.event(serviceLogError, "manager", "settings.apply_failed",
 					"настройки сохранены, но VPN не запустился",
 					field("error", err),
@@ -888,6 +951,20 @@ func (s *apiServer) handleBypass(w http.ResponseWriter, r *http.Request) {
 		s.mu.RUnlock()
 		writeJSON(w, status)
 	case http.MethodPost:
+		lease, leaseErr := s.operations.Acquire(r.Context(), operationRequest{
+			Kind:        "bypass",
+			Title:       "Обновление bypass",
+			Source:      "manual",
+			Cancellable: true,
+			StallLimit:  60 * time.Second,
+		})
+		if leaseErr != nil {
+			writeError(w, http.StatusConflict, leaseErr.Error())
+			return
+		}
+		var operationErr error
+		defer func() { lease.Finish(operationErr) }()
+		lease.Progress(operationProgress{Total: 3, Message: "Загружаем список доменов"})
 		st := s.settingsSnapshot()
 		opID := s.pm.nextOperationID("bypass")
 		started := time.Now()
@@ -908,7 +985,7 @@ func (s *apiServer) handleBypass(w http.ResponseWriter, r *http.Request) {
 			field("current_cache_domains", currentCacheCount))
 
 		attemptStarted := time.Now()
-		domains, err := fetchBypassWhitelist(directBypassHTTPClient(st.SubscriptionFetchTimeout()))
+		domains, err := fetchBypassWhitelistContext(lease.Context(), directBypassHTTPClient(st.SubscriptionFetchTimeout()))
 		transport := "wan"
 		if err == nil {
 			s.pm.event(serviceLogDebug, "bypass", "fetch.succeeded",
@@ -947,7 +1024,7 @@ func (s *apiServer) handleBypass(w http.ResponseWriter, r *http.Request) {
 					field("address", activeCopy.Address))
 				client, box, proxyErr := httpClientViaVLESS(activeCopy, st.SubscriptionFetchTimeout(), st.PingStartupSleep(), s.pm.logs)
 				if proxyErr == nil {
-					domains, err = fetchBypassWhitelist(client)
+					domains, err = fetchBypassWhitelistContext(lease.Context(), client)
 					_ = box.Close()
 					if err == nil {
 						s.pm.event(serviceLogDebug, "bypass", "fetch.succeeded",
@@ -971,7 +1048,14 @@ func (s *apiServer) handleBypass(w http.ResponseWriter, r *http.Request) {
 					field("op_id", opID))
 			}
 		}
+		lease.Progress(operationProgress{Done: 1, Total: 3, Message: "Список загружен, сохраняем изменения"})
+		if cancelErr := lease.Context().Err(); cancelErr != nil {
+			operationErr = cancelErr
+			writeError(w, http.StatusRequestTimeout, errOperationCancelled.Error())
+			return
+		}
 		if err != nil {
+			operationErr = err
 			duration := time.Since(started).Milliseconds()
 			s.mu.Lock()
 			s.bypassDiag.Transport = transport
@@ -994,6 +1078,7 @@ func (s *apiServer) handleBypass(w http.ResponseWriter, r *http.Request) {
 			Domains: domains, UpdatedAt: now, Source: bypassWhitelistURL,
 		}
 		if err := saveConfig(s.cfgPath, s.cfg); err != nil {
+			operationErr = err
 			s.bypassDiag.Transport = transport
 			s.bypassDiag.DurationMS = time.Since(started).Milliseconds()
 			s.bypassDiag.Error = err.Error()
@@ -1006,8 +1091,9 @@ func (s *apiServer) handleBypass(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		cfgSnap := *s.cfg
+		cfgSnap := cloneConfig(s.cfg)
 		s.mu.Unlock()
+		lease.Progress(operationProgress{Done: 2, Total: 3, Message: "Применяем список маршрутизации"})
 
 		if s.pm.TunRunning() {
 			restartStarted := time.Now()
@@ -1016,7 +1102,8 @@ func (s *apiServer) handleBypass(w http.ResponseWriter, r *http.Request) {
 				field("op_id", opID),
 				field("domains", len(domains)))
 			_ = s.pm.Stop()
-			if err := s.startManagedVPN(&cfgSnap); err != nil {
+			if err := s.startManagedVPN(cfgSnap); err != nil {
+				operationErr = err
 				s.mu.Lock()
 				s.bypassDiag.Transport = transport
 				s.bypassDiag.DurationMS = time.Since(started).Milliseconds()
@@ -1053,6 +1140,7 @@ func (s *apiServer) handleBypass(w http.ResponseWriter, r *http.Request) {
 			field("effective_domains", status.EffectiveCount),
 			field("duration_ms", duration),
 			field("vpn_running", status.Applied))
+		lease.Progress(operationProgress{Done: 3, Total: 3, Message: "Bypass обновлён"})
 		writeJSON(w, status)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "GET or POST only")
@@ -1187,6 +1275,38 @@ func (s *apiServer) persistSubscriptionsLocked() error {
 			field("path", s.subPath),
 			field("error", err))
 		return err
+	}
+	return nil
+}
+
+// persistMutationLocked commits a coordinated in-memory mutation. On failure
+// it restores both memory and, when necessary, the first file already written.
+// The caller must hold s.mu.Lock.
+func (s *apiServer) persistMutationLocked(previousConfig *Config, previousSubs []*Subscription, configChanged, subscriptionsChanged bool) error {
+	if configChanged {
+		if err := s.persistConfigLocked(); err != nil {
+			s.cfg = previousConfig
+			if subscriptionsChanged {
+				s.subs = previousSubs
+			}
+			return err
+		}
+	}
+	if subscriptionsChanged {
+		if err := s.persistSubscriptionsLocked(); err != nil {
+			if configChanged {
+				if rollbackErr := saveConfig(s.cfgPath, previousConfig); rollbackErr != nil {
+					s.pm.event(serviceLogError, "manager", "config.rollback_failed",
+						"не удалось откатить конфигурацию после ошибки сохранения подписок",
+						field("error", rollbackErr))
+				}
+			}
+			if configChanged {
+				s.cfg = previousConfig
+			}
+			s.subs = previousSubs
+			return err
+		}
 	}
 	return nil
 }
@@ -1339,14 +1459,22 @@ func (s *apiServer) autoSelectBest() string {
 	server, result := s.findBestConfigured("", false, false)
 	if server == nil || result == nil {
 		s.mu.Lock()
+		previousConfig := cloneConfig(s.cfg)
 		s.cfg.ActiveServer = ""
-		_ = s.persistConfigLocked()
+		if err := s.persistMutationLocked(previousConfig, nil, true, false); err != nil {
+			s.pm.event(serviceLogError, "priority", "selection.persist_failed",
+				"не удалось сохранить сброс выбранного сервера", field("error", err))
+		}
 		s.mu.Unlock()
 		s.pm.event(serviceLogWarn, "priority", "selection.failed",
 			"ни одна включённая подписка не дала рабочего доступа")
 		return ""
 	}
-	s.commitSelectedServer(preferGroupMember(*server, result.SelectedMemberID))
+	if err := s.commitSelectedServer(preferGroupMember(*server, result.SelectedMemberID)); err != nil {
+		s.pm.event(serviceLogError, "priority", "selection.persist_failed",
+			"выбранный сервер не сохранён", field("error", err))
+		return ""
+	}
 	s.pm.event(serviceLogInfo, "priority", "selection.succeeded",
 		"автоматически выбран сервер",
 		field("server", result.ServerName),
@@ -1370,10 +1498,10 @@ func (s *apiServer) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.RLock()
-	cfgSnap := *s.cfg
+	cfgSnap := cloneConfig(s.cfg)
 	s.mu.RUnlock()
 
-	if err := s.startManagedVPN(&cfgSnap); err != nil {
+	if err := s.startManagedVPN(cfgSnap); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1391,9 +1519,14 @@ func (s *apiServer) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	previousConfig := cloneConfig(s.cfg)
 	pruned := pruneStaleServers(s.cfg, s.subs)
 	if pruned > 0 {
-		_ = s.persistConfigLocked()
+		if err := s.persistMutationLocked(previousConfig, nil, true, false); err != nil {
+			s.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	s.mu.Unlock()
 	if pruned > 0 {
@@ -1417,10 +1550,10 @@ func (s *apiServer) handleRestart(w http.ResponseWriter, r *http.Request) {
 	time.Sleep(500 * time.Millisecond)
 
 	s.mu.RLock()
-	cfgSnap := *s.cfg
+	cfgSnap := cloneConfig(s.cfg)
 	s.mu.RUnlock()
 
-	if err := s.startManagedVPN(&cfgSnap); err != nil {
+	if err := s.startManagedVPN(cfgSnap); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1529,16 +1662,26 @@ func (s *apiServer) handleServerByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "transport "+srv.Network+" is not supported by sing-box "+BundledSingBox)
 			return
 		}
+		previousConfig := cloneConfig(s.cfg)
 		s.cfg.Servers[idx] = srv
-		_ = s.persistConfigLocked()
+		if err := s.persistMutationLocked(previousConfig, nil, true, false); err != nil {
+			s.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		s.mu.Unlock()
 		writeJSON(w, srv)
 	case r.Method == http.MethodDelete && action == "":
+		previousConfig := cloneConfig(s.cfg)
 		s.cfg.Servers = append(s.cfg.Servers[:idx], s.cfg.Servers[idx+1:]...)
 		if s.cfg.ActiveServer == id {
 			s.cfg.ActiveServer = ""
 		}
-		_ = s.persistConfigLocked()
+		if err := s.persistMutationLocked(previousConfig, nil, true, false); err != nil {
+			s.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		s.mu.Unlock()
 		writeJSON(w, map[string]string{"status": "deleted"})
 	case r.Method == http.MethodPost && action == "connect":
@@ -1557,6 +1700,30 @@ func (s *apiServer) handleServerByID(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Subscriptions ---
+
+func (s *apiServer) fetchSubscriptionOperation(ctx context.Context, title, url string) (*Subscription, error) {
+	var sub *Subscription
+	err := s.operations.Run(ctx, operationRequest{
+		Kind:        "subscriptions",
+		Title:       title,
+		Source:      "manual",
+		Cancellable: true,
+		StallLimit:  60 * time.Second,
+	}, func(opCtx context.Context, report func(operationProgress)) error {
+		report(operationProgress{Total: 1, Message: "Загружаем список серверов"})
+		var err error
+		sub, err = s.fetchSubscriptionURLContext(opCtx, url)
+		if err != nil {
+			return err
+		}
+		if err := opCtx.Err(); err != nil {
+			return err
+		}
+		report(operationProgress{Done: 1, Total: 1, Message: "Подписка загружена"})
+		return nil
+	})
+	return sub, err
+}
 
 func (s *apiServer) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -1583,7 +1750,7 @@ func (s *apiServer) handleSubscriptions(w http.ResponseWriter, r *http.Request) 
 		}
 		// Slow network operation — DO NOT hold the lock.
 		s.pm.log(serviceLogInfo, "[subscription] добавление: начинаю загрузку")
-		sub, err := s.fetchSubscriptionURL(req.URL)
+		sub, err := s.fetchSubscriptionOperation(r.Context(), "Добавление подписки", req.URL)
 		if err != nil {
 			s.pm.log(serviceLogWarn, "[subscription] добавление не удалось: %v", err)
 			writeError(w, http.StatusBadGateway, err.Error())
@@ -1593,8 +1760,13 @@ func (s *apiServer) handleSubscriptions(w http.ResponseWriter, r *http.Request) 
 			sub.Name = req.Name
 		}
 		s.mu.Lock()
+		previousSubs := cloneSubscriptions(s.subs)
 		s.subs = append(s.subs, sub)
-		_ = s.persistSubscriptionsLocked()
+		if err := s.persistMutationLocked(nil, previousSubs, false, true); err != nil {
+			s.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		s.mu.Unlock()
 		s.pm.log(serviceLogInfo, "[subscription] добавлено %q: %d серверов, %d исключено", sub.Name, len(sub.Servers), sub.ExcludedServers)
 		writeJSON(w, sub)
@@ -1646,6 +1818,8 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusNotFound, "subscription not found")
 			return
 		}
+		previousConfig := cloneConfig(s.cfg)
+		previousSubs := cloneSubscriptions(s.subs)
 		s.subs = append(s.subs[:idx], s.subs[idx+1:]...)
 		activeBefore := s.cfg.ActiveServer
 		pruned := 0
@@ -1657,9 +1831,11 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 		activeRemoved := activeBefore != "" && s.cfg.ActiveServer == ""
 		activeDetached := vpnRunning && activeBefore != "" &&
 			s.cfg.ActiveServer == activeBefore && !s.serverAvailableLocked(activeBefore)
-		_ = s.persistSubscriptionsLocked()
-		if pruned > 0 || activeRemoved || activeDetached {
-			_ = s.persistConfigLocked()
+		configChanged := pruned > 0 || activeRemoved || activeDetached
+		if err := s.persistMutationLocked(previousConfig, previousSubs, configChanged, true); err != nil {
+			s.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
 		keep := make(map[string]bool)
 		for _, server := range s.allServersLocked() {
@@ -1711,8 +1887,13 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, &response)
 			return
 		}
+		previousSubs := cloneSubscriptions(s.subs)
 		s.subs[idx], s.subs[target] = s.subs[target], s.subs[idx]
-		_ = s.persistSubscriptionsLocked()
+		if err := s.persistMutationLocked(nil, previousSubs, false, true); err != nil {
+			s.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		response := *s.subs[target]
 		s.mu.Unlock()
 		s.pm.log(serviceLogInfo, "[priority] подписка %q перемещена на позицию %d", response.Name, target+1)
@@ -1724,12 +1905,11 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusConflict, "subscription is disabled")
 			return
 		}
-		current := *s.subs[idx]
-		current.Servers = append([]VLESSServer(nil), s.subs[idx].Servers...)
+		current := *cloneSubscription(s.subs[idx])
 		s.mu.RUnlock()
 
 		s.pm.log(serviceLogInfo, "[subscription] обновление %q: начинаю загрузку", current.Name)
-		sub, err := s.fetchSubscriptionURL(current.URL)
+		sub, err := s.fetchSubscriptionOperation(r.Context(), "Обновление: "+current.Name, current.URL)
 
 		s.mu.Lock()
 		// Re-find under write lock.
@@ -1746,8 +1926,13 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if err != nil {
+			previousSubs := cloneSubscriptions(s.subs)
 			s.subs[idx].Error = err.Error()
-			_ = s.persistSubscriptionsLocked()
+			if persistErr := s.persistMutationLocked(nil, previousSubs, false, true); persistErr != nil {
+				s.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, persistErr.Error())
+				return
+			}
 			s.mu.Unlock()
 			s.pm.log(serviceLogWarn, "[subscription] обновление %q не удалось: %v", current.Name, err)
 			writeError(w, http.StatusBadGateway, err.Error())
@@ -1756,19 +1941,23 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 		sub.ID = id
 		preserveSubscriptionDisplayName(sub, &current)
 		preserveSubscriptionOptions(sub, &current)
-		migratedPings := s.pingCache.MigrateEquivalent(current.Servers, sub.Servers)
+		previousConfig := cloneConfig(s.cfg)
+		previousSubs := cloneSubscriptions(s.subs)
 		s.subs[idx] = sub
-		_ = s.persistSubscriptionsLocked()
 		// Sync cached profiles while preserving the currently running
 		// connection. Catalog refreshes do not control tunnel lifetime.
 		activeBefore := s.cfg.ActiveServer
 		resynced := resyncServersFromSubs(s.cfg, s.subs)
 		pruned := pruneStaleServersPreservingActive(s.cfg, s.subs)
 		activeRemoved := activeBefore != "" && s.cfg.ActiveServer == ""
-		if resynced > 0 || pruned > 0 || activeRemoved {
-			_ = s.persistConfigLocked()
+		configChanged := resynced > 0 || pruned > 0 || activeRemoved
+		if persistErr := s.persistMutationLocked(previousConfig, previousSubs, configChanged, true); persistErr != nil {
+			s.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, persistErr.Error())
+			return
 		}
 		s.mu.Unlock()
+		migratedPings := s.pingCache.MigrateEquivalent(current.Servers, sub.Servers)
 		// Refreshing a catalog must never stop a working tunnel. Tunnel
 		// replacement is exclusively driven by the sustained health-check.
 		if migratedPings > 0 {
@@ -1816,9 +2005,10 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 			}
 			srv = preferGroupMember(srv, results[0].SelectedMemberID)
 		}
-		s.mu.Lock()
-		s.upsertServerLocked(srv)
-		s.mu.Unlock()
+		if err := s.commitSelectedServer(srv); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		s.connectServer(w, srv.ID, srv.Name)
 
 	case r.Method == http.MethodPost && action == "ping":
@@ -1890,6 +2080,8 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusNotFound, "subscription not found")
 			return
 		}
+		previousConfig := cloneConfig(s.cfg)
+		previousSubs := cloneSubscriptions(s.subs)
 		if newID != id {
 			for i, sub := range s.subs {
 				if i != idx && sub.ID == newID {
@@ -1912,14 +2104,17 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 				for _, server := range s.subs[idx].Servers {
 					if server.ID == s.cfg.ActiveServer && !s.serverAvailableLocked(server.ID) {
 						s.cfg.ActiveServer = ""
-						_ = s.persistConfigLocked()
 						stoppedActive = true
 						break
 					}
 				}
 			}
 		}
-		_ = s.persistSubscriptionsLocked()
+		if err := s.persistMutationLocked(previousConfig, previousSubs, stoppedActive, true); err != nil {
+			s.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		response := *s.subs[idx]
 		s.mu.Unlock()
 		if stoppedActive {
@@ -1965,13 +2160,18 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusNotFound, "subscription not found")
 			return
 		}
+		previousConfig := cloneConfig(s.cfg)
+		previousSubs := cloneSubscriptions(s.subs)
 		s.subs[idx].setServerDisabled(serverID, *req.Disabled)
 		stoppedActive := *req.Disabled && s.cfg.ActiveServer == serverID && !s.serverAvailableLocked(serverID)
 		if stoppedActive {
 			s.cfg.ActiveServer = ""
-			_ = s.persistConfigLocked()
 		}
-		_ = s.persistSubscriptionsLocked()
+		if err := s.persistMutationLocked(previousConfig, previousSubs, stoppedActive, true); err != nil {
+			s.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		response := *s.subs[idx]
 		s.mu.Unlock()
 		if stoppedActive {
@@ -2327,8 +2527,12 @@ func (s *apiServer) prepareServerForStart() (string, error) {
 	// always performs a fresh complete pass over the selected subscription
 	// before choosing its fastest working server.
 	s.mu.Lock()
+	previousConfig := cloneConfig(s.cfg)
 	s.cfg.ActiveServer = ""
-	_ = s.persistConfigLocked()
+	if err := s.persistMutationLocked(previousConfig, nil, true, false); err != nil {
+		s.mu.Unlock()
+		return "", fmt.Errorf("clear active server: %w", err)
+	}
 	s.mu.Unlock()
 
 	server, result := s.findBestConfigured("", false, false)
@@ -2336,13 +2540,11 @@ func (s *apiServer) prepareServerForStart() (string, error) {
 		return "", fmt.Errorf("server selection cancelled")
 	}
 	if server == nil || result == nil {
-		s.mu.Lock()
-		s.cfg.ActiveServer = ""
-		_ = s.persistConfigLocked()
-		s.mu.Unlock()
 		return "", fmt.Errorf("no enabled subscription has working internet")
 	}
-	s.commitSelectedServer(preferGroupMember(*server, result.SelectedMemberID))
+	if err := s.commitSelectedServer(preferGroupMember(*server, result.SelectedMemberID)); err != nil {
+		return "", fmt.Errorf("save selected server: %w", err)
+	}
 	s.pm.event(serviceLogInfo, "priority", "start.selection",
 		"сервер для запуска выбран",
 		field("server", result.ServerName),
@@ -2351,12 +2553,13 @@ func (s *apiServer) prepareServerForStart() (string, error) {
 	return result.ServerName, nil
 }
 
-func (s *apiServer) commitSelectedServer(server VLESSServer) {
+func (s *apiServer) commitSelectedServer(server VLESSServer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	previousConfig := cloneConfig(s.cfg)
 	s.upsertServerLocked(server)
 	s.cfg.ActiveServer = server.ID
-	_ = s.persistConfigLocked()
+	return s.persistMutationLocked(previousConfig, nil, true, false)
 }
 
 func preferGroupMember(server VLESSServer, memberID string) VLESSServer {
@@ -2394,6 +2597,21 @@ func (s *apiServer) allServersLocked() []VLESSServer {
 // its server list in place. Network I/O happens unlocked; only the in-memory
 // write of results is protected.
 func (s *apiServer) refreshAllSubscriptions() {
+	err := s.operations.Run(context.Background(), operationRequest{
+		Kind:        "subscriptions",
+		Title:       "Обновление подписок",
+		Source:      "background",
+		DedupeKey:   "subscriptions:all",
+		Cancellable: true,
+		StallLimit:  60 * time.Second,
+	}, s.refreshAllSubscriptionsCore)
+	if err != nil && !errors.Is(err, errOperationCancelled) {
+		s.pm.event(serviceLogWarn, "subscription", "refresh_all.failed",
+			"фоновое обновление подписок завершилось ошибкой", field("error", err))
+	}
+}
+
+func (s *apiServer) refreshAllSubscriptionsCore(ctx context.Context, report func(operationProgress)) error {
 	// Snapshot URLs+IDs+names under RLock.
 	s.mu.RLock()
 	type pending struct {
@@ -2410,6 +2628,7 @@ func (s *apiServer) refreshAllSubscriptions() {
 		work = append(work, item)
 	}
 	s.mu.RUnlock()
+	report(operationProgress{Total: len(work), Message: "Подготовлен список подписок"})
 
 	// Fetch all in series (parallel would burst-load the modem).
 	type fetched struct {
@@ -2420,10 +2639,17 @@ func (s *apiServer) refreshAllSubscriptions() {
 	timeout := s.settingsSnapshot().SubscriptionFetchTimeout()
 	results := make([]fetched, len(work))
 	for i, w := range work {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		report(operationProgress{
+			Done: i, Total: len(work), Current: w.name,
+			Message: fmt.Sprintf("Загружаем подписку %d из %d", i+1, len(work)),
+		})
 		s.pm.log(serviceLogInfo, "[subscription] фоновое обновление %q: начинаю загрузку", w.name)
 		var sub *Subscription
 		var err error
-		sub, err = s.fetchSubscriptionURLWithTimeout(w.sub.URL, timeout)
+		sub, err = s.fetchSubscriptionURLWithTimeoutContext(ctx, w.sub.URL, timeout)
 		results[i] = fetched{id: w.id, sub: sub, err: err}
 		if err == nil {
 			sub.ID = w.id
@@ -2440,11 +2666,17 @@ func (s *apiServer) refreshAllSubscriptions() {
 		} else {
 			s.pm.log(serviceLogWarn, "[subscription] фоновое обновление %q не удалось: %v", w.name, err)
 		}
+		report(operationProgress{
+			Done: i + 1, Total: len(work), Current: w.name,
+			Message: fmt.Sprintf("Обновлено %d из %d", i+1, len(work)),
+		})
 	}
 
 	// Apply under write lock.
 	vpnRunning := s.pm.Status().Running
 	s.mu.Lock()
+	previousConfig := cloneConfig(s.cfg)
+	previousSubs := cloneSubscriptions(s.subs)
 	for _, r := range results {
 		// Re-find by ID — subscription list may have shifted while we were fetching.
 		for i, sub := range s.subs {
@@ -2459,7 +2691,6 @@ func (s *apiServer) refreshAllSubscriptions() {
 			break
 		}
 	}
-	_ = s.persistSubscriptionsLocked()
 	// Re-sync manual cfg.Servers entries with whatever the subscriptions now
 	// say about the same server ID. Without this, transport tuning knobs
 	// that arrive via `extra={...}` (xmux, uplinkHTTPMethod, sc*Posts, …)
@@ -2469,8 +2700,10 @@ func (s *apiServer) refreshAllSubscriptions() {
 	resynced := resyncServersFromSubs(s.cfg, s.subs)
 	pruned := pruneStaleServersPreservingActive(s.cfg, s.subs)
 	activeRemoved := activeBefore != "" && s.cfg.ActiveServer == ""
-	if pruned > 0 || resynced > 0 || activeRemoved {
-		_ = s.persistConfigLocked()
+	configChanged := pruned > 0 || resynced > 0 || activeRemoved
+	if err := s.persistMutationLocked(previousConfig, previousSubs, configChanged, true); err != nil {
+		s.mu.Unlock()
+		return err
 	}
 	// Build keep-set for ping cache pruning.
 	keep := map[string]bool{}
@@ -2489,6 +2722,7 @@ func (s *apiServer) refreshAllSubscriptions() {
 		s.pm.log(serviceLogInfo, "[subscription] удалено устаревших серверов: %d", pruned)
 	}
 	s.pingCache.Prune(keep)
+	return nil
 }
 
 // activeSubUserInfoLocked returns the quota info of the subscription
@@ -2520,28 +2754,31 @@ func (s *apiServer) upsertServerLocked(srv VLESSServer) {
 	for i, existing := range s.cfg.Servers {
 		if existing.ID == srv.ID {
 			s.cfg.Servers[i] = srv
-			_ = s.persistConfigLocked()
 			return
 		}
 	}
 	s.cfg.Servers = append(s.cfg.Servers, srv)
-	_ = s.persistConfigLocked()
 }
 
 // connectServer sets the active server and starts it. Selecting "Connect" is
 // an explicit command, so there is no separate "remember only" behaviour.
 func (s *apiServer) connectServer(w http.ResponseWriter, id, name string) {
 	s.mu.Lock()
+	previousConfig := cloneConfig(s.cfg)
 	s.cfg.ActiveServer = id
-	_ = s.persistConfigLocked()
-	cfgSnap := *s.cfg
+	if err := s.persistMutationLocked(previousConfig, nil, true, false); err != nil {
+		s.mu.Unlock()
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cfgSnap := cloneConfig(s.cfg)
 	s.mu.Unlock()
 
 	wasRunning := s.pm.Status().Running
 	if wasRunning {
 		_ = s.pm.Stop()
 		time.Sleep(300 * time.Millisecond)
-		if err := s.connectStartFn(&cfgSnap); err != nil {
+		if err := s.connectStartFn(cfgSnap); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -2549,7 +2786,7 @@ func (s *apiServer) connectServer(w http.ResponseWriter, id, name string) {
 		if s.failover != nil {
 			s.failover.ResetBackoff()
 		}
-		if err := s.connectStartFn(&cfgSnap); err != nil {
+		if err := s.connectStartFn(cfgSnap); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
