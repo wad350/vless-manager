@@ -1214,10 +1214,16 @@ function renderLogsFull() {
   if (document.getElementById('logs-autoscroll').checked) el.scrollTop = el.scrollHeight;
 }
 
-document.getElementById('btn-clear-logs').addEventListener('click', () => {
-  logLines = [];
-  const el = document.getElementById('logs-output');
-  if (el) el.innerHTML = '<div class="logs-empty">Экран очищен. Новые события появятся автоматически.</div>';
+document.getElementById('btn-clear-logs').addEventListener('click', async () => {
+  try {
+    const result = await api('DELETE', '/logs');
+    logLines = [];
+    logSeq = Number(result.seq) || 0;
+    const el = document.getElementById('logs-output');
+    if (el) el.innerHTML = '<div class="logs-empty">Журнал очищен. Новые события появятся автоматически.</div>';
+  } catch (e) {
+    toast(e.message, 'err');
+  }
 });
 document.getElementById('logs-level-filter')?.addEventListener('change', renderLogsFull);
 document.getElementById('logs-component-filter')?.addEventListener('change', renderLogsFull);
@@ -2254,8 +2260,15 @@ document.getElementById('btn-settings-save')?.addEventListener('click', async ()
   }
   try {
     const authModeChanged = settingsCurrent.auth_enabled !== settingsDraft.auth_enabled;
+    const logLevelChanged = settingsCurrent.service_log_level !== settingsDraft.service_log_level ||
+      settingsCurrent.log_level !== settingsDraft.log_level;
     settingsCurrent = await api('PATCH', '/settings', settingsDraft);
     settingsDraft = structuredClone(settingsCurrent);
+    if (logLevelChanged) {
+      logLines = [];
+      logSeq = 0;
+      renderLogsFull();
+    }
     toast('Настройки сохранены');
     renderSettings();
     updateSettingsSavebar();

@@ -235,6 +235,45 @@ func TestSettingsAPIValidationAndPersistence(t *testing.T) {
 	}
 }
 
+func TestSettingsLogLevelClearsHistoryAndFiltersNewEntries(t *testing.T) {
+	api := newHandlerTestAPI(t)
+	api.pm.event(serviceLogInfo, "subscription", "old.info", "old entry")
+
+	rec := apiRequest(t, api, http.MethodPatch, "/api/settings", `{"service_log_level":"error"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings patch: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	api.pm.event(serviceLogInfo, "subscription", "new.info", "must be hidden")
+	api.pm.event(serviceLogError, "subscription", "new.error", "must remain")
+
+	rec = apiRequest(t, api, http.MethodGet, "/api/logs?since=0", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get logs: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Entries []serviceLogEntry `json:"entries"`
+		Seq     int               `json:"seq"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Entries) != 1 || response.Entries[0].Event != "new.error" {
+		t.Fatalf("unexpected entries: %+v", response.Entries)
+	}
+
+	rec = apiRequest(t, api, http.MethodDelete, "/api/logs", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete logs: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = apiRequest(t, api, http.MethodGet, "/api/logs?since=0", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Entries) != 0 {
+		t.Fatalf("entries after delete: %+v", response.Entries)
+	}
+}
+
 func TestConfigAPIValidationAndRoundTrip(t *testing.T) {
 	api := newHandlerTestAPI(t)
 	rec := apiRequest(t, api, http.MethodPost, "/api/config", "{")

@@ -21,6 +21,26 @@ func TestServiceLogLevelFiltering(t *testing.T) {
 	}
 }
 
+func TestClearLogsDropsBufferedEntries(t *testing.T) {
+	logs := newRingBuffer()
+	logs.log(serviceLogInfo, "old entry")
+	logs.clear()
+
+	entries, seq := logs.Entries(0)
+	if len(entries) != 0 {
+		t.Fatalf("entries after clear: %+v", entries)
+	}
+	if seq != 1 {
+		t.Fatalf("clear must preserve sequence, got %d", seq)
+	}
+
+	logs.log(serviceLogError, "new entry")
+	entries, seq = logs.Entries(1)
+	if seq != 2 || len(entries) != 1 || entries[0].Level != "ERROR" {
+		t.Fatalf("entries after new log: seq=%d entries=%+v", seq, entries)
+	}
+}
+
 func TestStructuredServiceLogEntry(t *testing.T) {
 	logs := newRingBuffer()
 	logs.logEvent(serviceLogInfo, "bypass", "refresh.succeeded", "updated",

@@ -45,7 +45,23 @@ body {
 .login-heading p { color: var(--text2); line-height: 1.5; }
 .login-card label { display: block; margin: 14px 0 7px; color: var(--text2); font-size: 12px; font-weight: 600; }
 .login-card input { width: 100%; min-height: 42px; }
-.login-submit { width: 100%; min-height: 42px; margin-top: 20px; }
+.login-submit {
+  width: 100%;
+  min-height: 44px;
+  justify-content: center;
+  margin-top: 20px;
+  font-size: 14px;
+  font-weight: 650;
+}
+.login-submit:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--accent2);
+}
+.login-submit:focus-visible {
+  outline: 3px solid rgba(124, 156, 255, 0.28);
+  outline-offset: 2px;
+}
+.login-submit:disabled { transform: none; }
 .login-error {
   margin-top: 14px;
   padding: 10px 12px;

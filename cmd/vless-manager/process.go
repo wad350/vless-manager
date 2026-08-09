@@ -100,6 +100,13 @@ func (r *ringBuffer) setLevel(value string) {
 	r.mu.Unlock()
 }
 
+func (r *ringBuffer) clear() {
+	r.mu.Lock()
+	r.buf = r.buf[:0]
+	r.entries = r.entries[:0]
+	r.mu.Unlock()
+}
+
 func (r *ringBuffer) log(level serviceLogLevel, line string) {
 	component, message := splitLogComponent(line)
 	r.logEvent(level, component, "message", message)
@@ -257,6 +264,10 @@ func NewProcessManager(dataDir string) *ProcessManager {
 
 func (pm *ProcessManager) SetServiceLogLevel(level string) {
 	pm.logs.setLevel(level)
+}
+
+func (pm *ProcessManager) ClearLogs() {
+	pm.logs.clear()
 }
 
 func (pm *ProcessManager) log(level serviceLogLevel, format string, args ...any) {

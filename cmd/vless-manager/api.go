@@ -824,7 +824,11 @@ func (s *apiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		snap := s.cfg.Settings
 		cfgSnap := cloneConfig(s.cfg)
 		s.mu.Unlock()
+		logLevelChanged := previous.ServiceLogLevel != out.ServiceLogLevel || previous.LogLevel != out.LogLevel
 		s.pm.SetServiceLogLevel(out.ServiceLogLevel)
+		if logLevelChanged {
+			s.pm.ClearLogs()
+		}
 		s.failover.ReloadSettings()
 
 		restartRequired := previous.BypassRouteRussia != out.BypassRouteRussia ||
@@ -1563,15 +1567,20 @@ func (s *apiServer) handleRestart(w http.ResponseWriter, r *http.Request) {
 // --- Logs ---
 
 func (s *apiServer) handleLogs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "GET only")
-		return
+	switch r.Method {
+	case http.MethodGet:
+		sinceStr := r.URL.Query().Get("since")
+		since, _ := strconv.Atoi(sinceStr)
+		lines, seq := s.pm.logs.Lines(since)
+		entries, _ := s.pm.logs.Entries(since)
+		writeJSON(w, map[string]any{"lines": lines, "entries": entries, "seq": seq})
+	case http.MethodDelete:
+		s.pm.ClearLogs()
+		_, seq := s.pm.logs.Entries(0)
+		writeJSON(w, map[string]any{"status": "cleared", "seq": seq})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "GET or DELETE only")
 	}
-	sinceStr := r.URL.Query().Get("since")
-	since, _ := strconv.Atoi(sinceStr)
-	lines, seq := s.pm.logs.Lines(since)
-	entries, _ := s.pm.logs.Entries(since)
-	writeJSON(w, map[string]any{"lines": lines, "entries": entries, "seq": seq})
 }
 
 // --- Manual Servers ---
