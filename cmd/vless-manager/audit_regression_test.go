@@ -97,6 +97,36 @@ func TestGlobalRouteReadyRequiresPolicyRulesAndRouteOutput(t *testing.T) {
 	}
 }
 
+func TestKeeneticUpstreamDNSServers(t *testing.T) {
+	output := `name-server:
+  address: 85.249.22.248
+  service: UsbQmi::Connection-UsbQmi0
+name-server:
+  address: 1.1.1.1
+name-server:
+  address: 85.249.22.248
+name-server:
+  address: 2a00:1450::8888
+  address: invalid
+`
+	got := keeneticUpstreamDNSServers(func(name string, args ...string) (string, error) {
+		if name != "ndmc" || strings.Join(args, " ") != "-c show ip name-server" {
+			t.Fatalf("unexpected command: %s %v", name, args)
+		}
+		return output, nil
+	})
+	if want := "85.249.22.248,1.1.1.1"; strings.Join(got, ",") != want {
+		t.Fatalf("servers = %v, want %s", got, want)
+	}
+
+	got = keeneticUpstreamDNSServers(func(string, ...string) (string, error) {
+		return "", errors.New("ndmc unavailable")
+	})
+	if len(got) != 0 {
+		t.Fatalf("servers after command failure = %v, want none", got)
+	}
+}
+
 func TestSubscriptionFetchHonorsContextCancellation(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		<-req.Context().Done()

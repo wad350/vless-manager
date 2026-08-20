@@ -52,7 +52,8 @@ func TestFailoverOuterDecisions(t *testing.T) {
 		{"free internet", true, true, false, 0, 0, "Свободный интернет"},
 		{"whitelist starts VPN", false, true, false, 1, 0, "Whitelist активен"},
 		{"free internet stops VPN", true, true, true, 0, 1, "Свободный интернет"},
-		{"loss stops VPN", false, false, true, 0, 1, "Связи нет"},
+		{"loss keeps running VPN", false, false, true, 0, 0, "сохраняю работающий VPN"},
+		{"no direct access starts VPN", false, false, false, 1, 0, "пробую VPN"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

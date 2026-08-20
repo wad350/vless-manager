@@ -565,7 +565,7 @@ func (u *appUpdater) withPreferredTransport(
 		}
 	}
 	u.setTransport("wan")
-	if err := fn(updateHTTPClient(timeout, wanDialer(timeout).Dial)); err != nil {
+	if err := fn(updateHTTPClient(timeout, wanDial(timeout))); err != nil {
 		return "wan", err
 	}
 	return "wan", nil

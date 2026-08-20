@@ -71,6 +71,37 @@ func ResolveAddrs(host string) []string {
 	return out
 }
 
+// keeneticUpstreamDNSServers returns the IPv4 resolvers currently selected by
+// Keenetic. ndnproxy sends its upstream requests to these addresses, so they
+// must stay on WAN; routing them back into VLESS makes uncached DNS lookups
+// depend on the tunnel being able to reach an operator-local resolver.
+func keeneticUpstreamDNSServers(command func(string, ...string) (string, error)) []string {
+	output, err := command("ndmc", "-c", "show ip name-server")
+	if err != nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	servers := make([]string, 0, 2)
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok || strings.TrimSpace(key) != "address" {
+			continue
+		}
+		ip := net.ParseIP(strings.TrimSpace(value))
+		if ip == nil || ip.To4() == nil {
+			continue
+		}
+		address := ip.To4().String()
+		if _, exists := seen[address]; exists {
+			continue
+		}
+		seen[address] = struct{}{}
+		servers = append(servers, address)
+	}
+	return servers
+}
+
 // waitForTun polls until tun0 appears (sing-box creates it on Start) or
 // the deadline passes. Returns an error if the interface never shows up.
 func waitForTun(timeout time.Duration) error {
@@ -91,8 +122,8 @@ func waitForTun(timeout time.Duration) error {
 // EnableGlobalRoute routes all non-local traffic from LAN and local
 // router processes through tun0:
 //
-//  1. VLESS_TPROXY mangle chain: RETURN private CIDRs and the VLESS server
-//     IP; MARK every other TCP/UDP packet (including external DNS and QUIC).
+//  1. VLESS_TPROXY mangle chain: RETURN private CIDRs, Keenetic's upstream
+//     DNS on port 53 and the VLESS server IP; MARK every other packet.
 //  2. ip rule: fwmark 0x1 → table 100 → default dev tun0.
 //     ip rule: fwmark 0x9911 → main → WAN (health/socket bypass).
 //  3. iptables FORWARD: br0 ↔ tun0 ACCEPT (Keenetic default is DROP).
@@ -142,10 +173,17 @@ func EnableGlobalRoute(vlessHost string) error {
 		return err
 	}
 
-	// DNS addressed to this router and other LAN hosts already matches a
-	// private CIDR above and therefore stays local. Public resolvers and QUIC
-	// are deliberately not special-cased: like all other non-local traffic,
-	// they must enter tun0 and leave through VLESS/XUDP.
+	// Client DNS addressed to this router already matches a private CIDR. Keep
+	// ndnproxy's current upstream resolvers on WAN as well; otherwise operator
+	// DNS is sent into VLESS and uncached names intermittently stop resolving.
+	for _, ip := range keeneticUpstreamDNSServers(run) {
+		for _, protocol := range []string{"udp", "tcp"} {
+			if err := requireRouteCommand("add Keenetic DNS bypass", "iptables", "-t", "mangle", "-A", vlessMangleChain,
+				"-d", ip+"/32", "-p", protocol, "--dport", "53", "-j", "RETURN"); err != nil {
+				return err
+			}
+		}
+	}
 
 	// VLESS server — must not enter tun0 or we get a routing loop.
 	serverAddrs := ResolveAddrs(vlessHost)

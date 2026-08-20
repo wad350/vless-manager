@@ -364,24 +364,31 @@ func (fc *failoverController) outerTick() {
 	st := fc.api.settingsSnapshot()
 	openR, openOK := fc.runProbesFn(st.OpenProbes, st.ProbeTimeout())
 	whR, whOK := fc.runProbesFn(st.WhitelistProbes, st.ProbeTimeout())
+	running := fc.statusFn().Running
 
 	var (
 		wantOn bool
 		reason string
 	)
 	switch {
-	case !openOK && !whOK:
-		wantOn = false
-		reason = "Связи нет — VPN должен быть выключен"
 	case openOK:
 		wantOn = false
 		reason = "Свободный интернет — VPN не нужен"
-	case !openOK && whOK:
+	case whOK:
 		wantOn = true
 		reason = "Whitelist активен — VPN нужен"
+	default:
+		// The operator checks only tell us that direct access is unavailable.
+		// They must not stop a working tunnel: the tunnel itself may be the
+		// only remaining path to the internet.
+		wantOn = true
+		if running {
+			reason = "Прямой доступ недоступен — сохраняю работающий VPN"
+		} else {
+			reason = "Прямой доступ недоступен — пробую VPN"
+		}
 	}
 
-	running := fc.statusFn().Running
 	policyEnabled := fc.Enabled()
 	fc.api.pm.event(serviceLogDebug, "failover", "outer.completed",
 		"проверка доступа через WAN завершена",

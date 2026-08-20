@@ -32,6 +32,22 @@ func TestSettingsDurationAccessors(t *testing.T) {
 	}
 }
 
+func TestWANProbeNetworkUsesIPv4(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "tcp", want: "tcp4"},
+		{input: "tcp4", want: "tcp4"},
+		{input: "udp", want: "udp"},
+	}
+	for _, test := range tests {
+		if got := wanProbeNetwork(test.input); got != test.want {
+			t.Fatalf("wanProbeNetwork(%q)=%q, want %q", test.input, got, test.want)
+		}
+	}
+}
+
 func TestHealthMonitorAndWaitForWANWithDeterministicProbe(t *testing.T) {
 	oldProbe := wanProbeCall
 	defer func() { wanProbeCall = oldProbe }()

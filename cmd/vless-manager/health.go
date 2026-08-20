@@ -158,6 +158,30 @@ func wanDialer(timeout time.Duration) *net.Dialer {
 	}
 }
 
+func wanProbeNetwork(network string) string {
+	if network == "tcp" {
+		return "tcp4"
+	}
+	return network
+}
+
+// wanDialContext forces IPv4 for WAN-only HTTP requests. The managed policy
+// route is IPv4-only; accepting an AAAA result here can produce a false
+// "network is unreachable" even when the same host is reachable over IPv4.
+func wanDialContext(timeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
+	dialer := wanDialer(timeout)
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dialer.DialContext(ctx, wanProbeNetwork(network), address)
+	}
+}
+
+func wanDial(timeout time.Duration) func(string, string) (net.Conn, error) {
+	dialer := wanDialer(timeout)
+	return func(network, address string) (net.Conn, error) {
+		return dialer.Dial(wanProbeNetwork(network), address)
+	}
+}
+
 // WaitForWAN blocks until a WAN-only HTTP probe succeeds or the timeout
 // elapses. Used at boot to defer starting sing-box until the modem has
 // finished bringing the default route up.
@@ -197,7 +221,7 @@ func wanProbe(url string, timeout time.Duration) (bool, error) {
 	client := &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			DialContext:       wanDialer(timeout).DialContext,
+			DialContext:       wanDialContext(timeout),
 			DisableKeepAlives: true,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error {
