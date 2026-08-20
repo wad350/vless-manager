@@ -14,7 +14,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/common/sniff"
-	"github.com/sagernet/sing-box/common/tlsfragment"
+	tf "github.com/sagernet/sing-box/common/tlsfragment"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
@@ -279,7 +279,7 @@ func (m *ConnectionManager) connectionCopy(ctx context.Context, source net.Conn,
 	if !direction {
 		if err == nil {
 			m.logger.DebugContext(ctx, "connection upload finished")
-		} else if !E.IsClosedOrCanceled(err) {
+		} else if !E.IsClosedOrCanceled(err) && !strings.Contains(err.Error(), "NO_ERROR") && !strings.Contains(err.Error(), "CANCEL") && !strings.Contains(err.Error(), "body closed") {
 			m.logger.ErrorContext(ctx, "connection upload closed: ", err)
 		} else {
 			m.logger.TraceContext(ctx, "connection upload closed")
@@ -287,7 +287,7 @@ func (m *ConnectionManager) connectionCopy(ctx context.Context, source net.Conn,
 	} else {
 		if err == nil {
 			m.logger.DebugContext(ctx, "connection download finished")
-		} else if !E.IsClosedOrCanceled(err) {
+		} else if !E.IsClosedOrCanceled(err) && !strings.Contains(err.Error(), "NO_ERROR") && !strings.Contains(err.Error(), "response body closed") {
 			m.logger.ErrorContext(ctx, "connection download closed: ", err)
 		} else {
 			m.logger.TraceContext(ctx, "connection download closed")

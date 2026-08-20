@@ -53,7 +53,7 @@ cat >"$TEST_DIR/bin/opkg" <<'EOF'
 #!/bin/sh
 case "$1" in
     print-architecture)
-        printf 'arch all 1\narch mipsel-3.4 10\n'
+        printf 'arch all 1\narch mipsel-3.4 10\narch aarch64-3.10 10\n'
         ;;
     install)
         package=
@@ -73,9 +73,11 @@ EOF
 
 chmod +x "$TEST_DIR/bin/id" "$TEST_DIR/bin/curl" "$TEST_DIR/bin/opkg"
 
-PATH="$TEST_DIR/bin:$PATH" TMPDIR="$TEST_DIR" \
-    sh "$ROOT/install.sh" >"$TEST_DIR/output.log"
-
-grep -q 'VLESS Manager 9.8.7 установлен' "$TEST_DIR/output.log"
-grep -qx '9.8.7' "$TEST_DIR/installed-version"
+for architecture in mipsel-3.4 aarch64-3.10; do
+    PATH="$TEST_DIR/bin:$PATH" TMPDIR="$TEST_DIR" VLESS_MANAGER_ARCH="$architecture" \
+        sh "$ROOT/install.sh" >"$TEST_DIR/output.log"
+    grep -q "Скачиваю VLESS Manager 9.8.7 для $architecture" "$TEST_DIR/output.log"
+    grep -q 'VLESS Manager 9.8.7 установлен' "$TEST_DIR/output.log"
+    grep -qx '9.8.7' "$TEST_DIR/installed-version"
+done
 printf 'install.sh integration test passed\n'

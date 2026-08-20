@@ -29,7 +29,7 @@ func TestLoadConfigKeepsDefaultsForMissingSettings(t *testing.T) {
 
 func TestSettingsValidationRejectsUnsafeParallelPing(t *testing.T) {
 	settings := defaultSettings()
-	settings.PingMaxParallel = 3
+	settings.PingMaxParallel = -1
 	if err := settings.validate(); err == nil || !strings.Contains(err.Error(), "ping_max_parallel") {
 		t.Fatalf("expected ping_max_parallel error, got %v", err)
 	}

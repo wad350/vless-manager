@@ -278,7 +278,7 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, startContext *adapter.HTTPSta
 				}
 			}
 		}
-		s.logger.Info("update rule-set ", s.options.Tag, ": not modified")
+		s.logger.Notice("update rule-set ", s.options.Tag, ": not modified")
 		return nil
 	default:
 		return E.New("unexpected status: ", response.Status)
@@ -309,7 +309,7 @@ func (s *RemoteRuleSet) fetch(ctx context.Context, startContext *adapter.HTTPSta
 			s.logger.Error("save rule-set cache: ", err)
 		}
 	}
-	s.logger.Info("updated rule-set ", s.options.Tag)
+	s.logger.Notice("updated rule-set ", s.options.Tag)
 	return nil
 }
 

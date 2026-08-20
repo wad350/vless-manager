@@ -1,0 +1,42 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks-in",
+      "listen_port": 7897
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "traffic-limiter",
+      "tag": "traffic-limiter",
+      "strategy": "global",
+      "mode": "bidirectional", // download, upload
+      "total": "10GB", // 100MB, 1TB, etc.
+      "route": { // https://sing-box.sagernet.org/configuration/route/#structure
+        "rules": [],
+        "final": "direct"
+      }
+    }
+  ],
+  "route": {
+    "final": "traffic-limiter",
+    "default_domain_resolver": "default",
+    "auto_detect_interface": true
+  }
+}

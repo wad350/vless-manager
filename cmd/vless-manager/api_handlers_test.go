@@ -224,7 +224,7 @@ func TestSettingsAPIValidationAndPersistence(t *testing.T) {
 	for name, body := range map[string]string{
 		"malformed": `{"ping_selection_mode":`,
 		"unknown":   `{"unknown_setting":1}`,
-		"invalid":   `{"ping_max_parallel":3}`,
+		"invalid":   `{"ping_max_parallel":-1}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := apiRequest(t, api, http.MethodPatch, "/api/settings", body)

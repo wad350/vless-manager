@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"sync"
 
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
@@ -26,6 +27,9 @@ type Service[K comparable] struct {
 	handler         Handler
 	fallbackHandler N.TCPConnectionHandlerEx
 	logger          logger.ContextLogger
+	conns           map[K][]net.Conn
+
+	mu sync.RWMutex
 }
 
 func NewService[K comparable](handler Handler, fallbackHandler N.TCPConnectionHandlerEx, logger logger.ContextLogger) *Service[K] {
@@ -35,6 +39,7 @@ func NewService[K comparable](handler Handler, fallbackHandler N.TCPConnectionHa
 		handler:         handler,
 		fallbackHandler: fallbackHandler,
 		logger:          logger,
+		conns:           make(map[K][]net.Conn),
 	}
 }
 
@@ -54,8 +59,20 @@ func (s *Service[K]) UpdateUsers(userList []K, passwordList []string) error {
 		users[user] = key
 		keys[key] = user
 	}
+	s.mu.Lock()
 	s.users = users
 	s.keys = keys
+	var closedConns []net.Conn
+	for user, conns := range s.conns {
+		if _, exists := users[user]; !exists {
+			closedConns = append(closedConns, conns...)
+			delete(s.conns, user)
+		}
+	}
+	s.mu.Unlock()
+	for _, conn := range closedConns {
+		conn.Close()
+	}
 	return nil
 }
 
@@ -68,9 +85,30 @@ func (s *Service[K]) NewConnection(ctx context.Context, conn net.Conn, source M.
 		return s.fallback(ctx, conn, source, key[:n], E.New("bad request size"), onClose)
 	}
 
+	s.mu.RLock()
 	if user, loaded := s.keys[key]; loaded {
+		s.mu.RUnlock()
 		ctx = auth.ContextWithUser(ctx, user)
+		s.mu.Lock()
+		s.conns[user] = append(s.conns[user], conn)
+		s.mu.Unlock()
+		originalOnClose := onClose
+		onClose = N.OnceClose(func(it error) {
+			s.mu.Lock()
+			conns := s.conns[user]
+			for i, c := range conns {
+				if c == conn {
+					s.conns[user] = append(conns[:i], conns[i+1:]...)
+					break
+				}
+			}
+			s.mu.Unlock()
+			if originalOnClose != nil {
+				originalOnClose(it)
+			}
+		})
 	} else {
+		s.mu.RUnlock()
 		return s.fallback(ctx, conn, source, key[:], E.New("bad request"), onClose)
 	}
 

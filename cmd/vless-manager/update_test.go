@@ -156,7 +156,7 @@ func TestReleaseAssetsRequireBinaryAndChecksum(t *testing.T) {
 			Size:               100,
 		},
 	)
-	pkg, checksum, err := releaseAssets(release, "1.15.0")
+	pkg, checksum, err := releaseAssets(release, "1.15.0", "mipsel-3.4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestReleaseAssetsRequireBinaryAndChecksum(t *testing.T) {
 	}
 
 	release.Assets = release.Assets[:1]
-	if _, _, err := releaseAssets(release, "1.15.0"); err == nil {
+	if _, _, err := releaseAssets(release, "1.15.0", "mipsel-3.4"); err == nil {
 		t.Fatal("missing checksum accepted")
 	}
 }
@@ -198,6 +198,7 @@ func TestDownloadVerifiedPackage(t *testing.T) {
 		releaseAsset{Name: "package.ipk", URL: "https://github.com/package.ipk", Size: int64(len(pkg))},
 		releaseAsset{Name: "package.ipk.sha256", URL: "https://github.com/package.ipk.sha256", Size: 74},
 		"1.15.0",
+		"mipsel-3.4",
 		destination,
 		func(phase string, _, _ int64) {
 			if len(phases) == 0 || phases[len(phases)-1] != phase {
@@ -247,7 +248,7 @@ func TestValidateIPKRejectsWrongMetadata(t *testing.T) {
 	if err := os.WriteFile(path, minimalIPK(t, "9.9.9"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateIPK(path, "1.15.2"); err == nil {
+	if err := validateIPK(path, "1.15.2", "mipsel-3.4"); err == nil {
 		t.Fatal("IPK with wrong version accepted")
 	}
 }
@@ -255,11 +256,27 @@ func TestValidateIPKRejectsWrongMetadata(t *testing.T) {
 func TestValidateBuiltIPK(t *testing.T) {
 	path := os.Getenv("VLESS_MANAGER_TEST_IPK")
 	version := os.Getenv("VLESS_MANAGER_TEST_IPK_VERSION")
-	if path == "" || version == "" {
+	architecture := os.Getenv("VLESS_MANAGER_TEST_IPK_ARCH")
+	if path == "" || version == "" || architecture == "" {
 		t.Skip("VLESS_MANAGER_TEST_IPK is not set")
 	}
-	if err := validateIPK(path, version); err != nil {
+	if err := validateIPK(path, version, architecture); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateELFArchitecture(t *testing.T) {
+	if err := validateELFArchitecture(minimalMIPSELF(), "mipsel-3.4"); err != nil {
+		t.Fatal(err)
+	}
+	arm64 := make([]byte, 64)
+	copy(arm64, []byte{0x7f, 'E', 'L', 'F'})
+	arm64[4], arm64[5], arm64[18] = 2, 1, 183
+	if err := validateELFArchitecture(arm64, "aarch64-3.10"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateELFArchitecture(arm64, "mipsel-3.4"); err == nil {
+		t.Fatal("ARM64 binary accepted as MIPSLE")
 	}
 }
 

@@ -91,8 +91,8 @@ func waitForTun(timeout time.Duration) error {
 // EnableGlobalRoute routes all non-local traffic from LAN and local
 // router processes through tun0:
 //
-//  1. VLESS_TPROXY mangle chain: RETURN private CIDRs, DNS (port 53),
-//     QUIC (UDP 443), and the VLESS server IP; MARK everything else 0x1.
+//  1. VLESS_TPROXY mangle chain: RETURN private CIDRs and the VLESS server
+//     IP; MARK every other TCP/UDP packet (including external DNS and QUIC).
 //  2. ip rule: fwmark 0x1 → table 100 → default dev tun0.
 //     ip rule: fwmark 0x9911 → main → WAN (health/socket bypass).
 //  3. iptables FORWARD: br0 ↔ tun0 ACCEPT (Keenetic default is DROP).
@@ -142,20 +142,10 @@ func EnableGlobalRoute(vlessHost string) error {
 		return err
 	}
 
-	// DNS — bypass so LAN clients' queries go straight to dnsmasq.
-	// Routing DNS through tun0 causes goroutine/FD pile-up under load on MIPS.
-	if err := requireRouteCommand("add UDP DNS bypass", "iptables", "-t", "mangle", "-A", vlessMangleChain, "-p", "udp", "--dport", "53", "-j", "RETURN"); err != nil {
-		return err
-	}
-	if err := requireRouteCommand("add TCP DNS bypass", "iptables", "-t", "mangle", "-A", vlessMangleChain, "-p", "tcp", "--dport", "53", "-j", "RETURN"); err != nil {
-		return err
-	}
-
-	// QUIC — drop so browsers fall back to TCP/443 through the tunnel.
-	// UDP-over-VLESS is expensive; HTTP/3 is not needed for bypass to work.
-	if err := requireRouteCommand("add QUIC fallback rule", "iptables", "-t", "mangle", "-A", vlessMangleChain, "-p", "udp", "--dport", "443", "-j", "DROP"); err != nil {
-		return err
-	}
+	// DNS addressed to this router and other LAN hosts already matches a
+	// private CIDR above and therefore stays local. Public resolvers and QUIC
+	// are deliberately not special-cased: like all other non-local traffic,
+	// they must enter tun0 and leave through VLESS/XUDP.
 
 	// VLESS server — must not enter tun0 or we get a routing loop.
 	serverAddrs := ResolveAddrs(vlessHost)

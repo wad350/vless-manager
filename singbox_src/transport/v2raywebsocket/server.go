@@ -115,7 +115,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if len(earlyData) > 0 {
 		conn = bufio.NewCachedConn(conn, buf.As(earlyData))
 	}
-	s.handler.NewConnectionEx(v2rayhttp.DupContext(request.Context()), conn, source, M.Socksaddr{}, nil)
+	s.handler.NewConnectionEx(v2rayhttp.HWIDContext(v2rayhttp.DupContext(request.Context()), request.Header), conn, source, M.Socksaddr{}, nil)
 }
 
 func (s *Server) invalidRequest(writer http.ResponseWriter, request *http.Request, statusCode int, err error) {

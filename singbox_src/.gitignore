@@ -21,3 +21,12 @@
 CLAUDE.md
 AGENTS.md
 /.claude/
+dist
+logs
+/*.so
+/*.log
+/*.db-shm
+/*.db-wal
+/*.db.backup.*
+/test_download.bin
+/wget-log

@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
-	"runtime/debug"
 	"syscall"
 	"time"
 )
@@ -19,21 +17,11 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const runtimeCPULimit = 3
-
 func main() {
-	// Keenetic MT7621 exposes four hardware threads. Keep the process limit
-	// explicit and leave one thread available for ndm, networking and the UI.
-	runtime.GOMAXPROCS(runtimeCPULimit)
-
 	// Single combined process: protect from OOM killer at highest priority
 	// (same as ndm, the router's own daemon). With sing-box embedded there is
 	// only one Go runtime to protect instead of two.
 	_ = os.WriteFile("/proc/self/oom_score_adj", []byte("-1000"), 0644)
-
-	// Cap heap to 50 MB. The GC will stay aggressive to fit within this limit.
-	// Two Go runtimes would have needed ~75 MB total; one runtime fits in ~50 MB.
-	debug.SetMemoryLimit(50 * 1024 * 1024)
 
 	// Raise fd limit — TPROXY opens two sockets per LAN connection.
 	_ = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &syscall.Rlimit{

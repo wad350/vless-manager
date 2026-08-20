@@ -46,6 +46,7 @@ type Server struct {
 	dnsRouter      adapter.DNSRouter
 	outbound       adapter.OutboundManager
 	endpoint       adapter.EndpointManager
+	provider       adapter.ProviderManager
 	logger         log.Logger
 	httpServer     *http.Server
 	trafficManager *trafficontrol.Manager
@@ -71,6 +72,7 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		dnsRouter: service.FromContext[adapter.DNSRouter](ctx),
 		outbound:  service.FromContext[adapter.OutboundManager](ctx),
 		endpoint:  service.FromContext[adapter.EndpointManager](ctx),
+		provider:  service.FromContext[adapter.ProviderManager](ctx),
 		logger:    logFactory.NewLogger("clash-api"),
 		httpServer: &http.Server{
 			Addr:    options.ExternalController,
@@ -122,7 +124,7 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
 		r.Mount("/proxies", proxyRouter(s, s.router))
 		r.Mount("/rules", ruleRouter(s.router))
 		r.Mount("/connections", connectionRouter(s.ctx, s.router, trafficManager))
-		r.Mount("/providers/proxies", proxyProviderRouter())
+		r.Mount("/providers/proxies", proxyProviderRouter(s))
 		r.Mount("/providers/rules", ruleProviderRouter())
 		r.Mount("/script", scriptRouter())
 		r.Mount("/profile", profileRouter())
@@ -175,7 +177,7 @@ func (s *Server) Start(stage adapter.StartStage) error {
 			if err != nil {
 				return E.Cause(err, "external controller listen error")
 			}
-			s.logger.Info("restful api listening at ", listener.Addr())
+			s.logger.Notice("restful api listening at ", listener.Addr())
 			go func() {
 				err = s.httpServer.Serve(listener)
 				if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -232,7 +234,7 @@ func (s *Server) SetMode(newMode string) {
 			s.logger.Error(E.Cause(err, "save mode"))
 		}
 	}
-	s.logger.Info("updated mode: ", newMode)
+	s.logger.Notice("updated mode: ", newMode)
 }
 
 func (s *Server) HistoryStorage() adapter.URLTestHistoryStorage {

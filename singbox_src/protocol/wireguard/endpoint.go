@@ -47,7 +47,7 @@ type Endpoint struct {
 
 func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.WireGuardEndpointOptions) (adapter.Endpoint, error) {
 	ep := &Endpoint{
-		Adapter:        endpoint.NewAdapterWithDialerOptions(C.TypeWireGuard, tag, []string{N.NetworkTCP, N.NetworkUDP, N.NetworkICMP}, options.DialerOptions),
+		Adapter:        endpoint.NewAdapterWithDialerOptions(C.TypeWireGuard, tag, []string{N.NetworkTCP, N.NetworkUDP}, options.DialerOptions),
 		ctx:            ctx,
 		router:         router,
 		dnsRouter:      service.FromContext[adapter.DNSRouter](ctx),
@@ -73,6 +73,34 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 		udpTimeout = time.Duration(options.UDPTimeout)
 	} else {
 		udpTimeout = C.UDPTimeout
+	}
+	var amnezia *wireguard.AmneziaOptions
+	if options.Amnezia != nil {
+		amnezia = &wireguard.AmneziaOptions{
+			JC:                     options.Amnezia.JC,
+			JMin:                   options.Amnezia.JMin,
+			JMax:                   options.Amnezia.JMax,
+			S1:                     options.Amnezia.S1,
+			S2:                     options.Amnezia.S2,
+			S3:                     options.Amnezia.S3,
+			S4:                     options.Amnezia.S4,
+			H1:                     options.Amnezia.H1,
+			H2:                     options.Amnezia.H2,
+			H3:                     options.Amnezia.H3,
+			H4:                     options.Amnezia.H4,
+			I1:                     options.Amnezia.I1,
+			I2:                     options.Amnezia.I2,
+			I3:                     options.Amnezia.I3,
+			I4:                     options.Amnezia.I4,
+			I5:                     options.Amnezia.I5,
+			HeaderProtectionKey:    options.Amnezia.HeaderProtectionKey,
+			ContentPaddingAddition: options.Amnezia.ContentPaddingAddition,
+			RekeyAfterTime:         options.Amnezia.RekeyAfterTime,
+			RekeyTimeout:           options.Amnezia.RekeyTimeout,
+			RejectAfterTime:        options.Amnezia.RejectAfterTime,
+			KeepaliveTimeout:       options.Amnezia.KeepaliveTimeout,
+			MaxHandshakeAttempts:   options.Amnezia.MaxHandshakeAttempts,
+		}
 	}
 	wgEndpoint, err := wireguard.NewEndpoint(wireguard.EndpointOptions{
 		Context:     ctx,
@@ -106,10 +134,12 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 				PreSharedKey:                it.PreSharedKey,
 				AllowedIPs:                  it.AllowedIPs,
 				PersistentKeepaliveInterval: it.PersistentKeepaliveInterval,
-				Reserved:                    it.Reserved,
 			}
 		}),
-		Workers: options.Workers,
+		Workers:                    options.Workers,
+		PreallocatedBuffersPerPool: options.PreallocatedBuffersPerPool,
+		DisablePauses:              options.DisablePauses,
+		Amnezia:                    amnezia,
 	})
 	if err != nil {
 		return nil, err

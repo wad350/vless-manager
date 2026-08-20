@@ -23,23 +23,30 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.24.7'
+          go-version: '1.26.4'
           cache-dependency-path: |
             go.sum
             singbox_src/go.sum
 
       - name: Test
         run: |
-          go test -tags with_utls ./cmd/vless-manager
+          go test -tags with_utls ./...
           sh -n install.sh
           sh tests/install_test.sh
 
-      - name: Build Keenetic binary
-        run: make manager
+      - name: Build Keenetic packages
+        run: |
+          make clean
+          make ipk ARCH=mipsel-3.4 GOARCH=mipsle GOMIPS=softfloat
+          mkdir -p dist
+          cp build/*.ipk dist/
+          make clean
+          make ipk ARCH=aarch64-3.10 GOARCH=arm64 GOMIPS=
+          cp build/*.ipk dist/
 
-      - name: Upload binary
+      - name: Upload packages
         uses: actions/upload-artifact@v7
         with:
-          name: vless-manager-linux-mipsle-softfloat
-          path: build/vless-manager
+          name: vless-manager-keenetic-packages
+          path: dist/*.ipk
           if-no-files-found: error

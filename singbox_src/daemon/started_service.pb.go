@@ -20,13 +20,14 @@ const (
 type LogLevel int32
 
 const (
-	LogLevel_PANIC LogLevel = 0
-	LogLevel_FATAL LogLevel = 1
-	LogLevel_ERROR LogLevel = 2
-	LogLevel_WARN  LogLevel = 3
-	LogLevel_INFO  LogLevel = 4
-	LogLevel_DEBUG LogLevel = 5
-	LogLevel_TRACE LogLevel = 6
+	LogLevel_PANIC  LogLevel = 0
+	LogLevel_FATAL  LogLevel = 1
+	LogLevel_ERROR  LogLevel = 2
+	LogLevel_WARN   LogLevel = 3
+	LogLevel_NOTICE LogLevel = 4
+	LogLevel_INFO   LogLevel = 5
+	LogLevel_DEBUG  LogLevel = 6
+	LogLevel_TRACE  LogLevel = 7
 )
 
 // Enum value maps for LogLevel.
@@ -36,18 +37,20 @@ var (
 		1: "FATAL",
 		2: "ERROR",
 		3: "WARN",
-		4: "INFO",
-		5: "DEBUG",
-		6: "TRACE",
+		4: "NOTICE",
+		5: "INFO",
+		6: "DEBUG",
+		7: "TRACE",
 	}
 	LogLevel_value = map[string]int32{
-		"PANIC": 0,
-		"FATAL": 1,
-		"ERROR": 2,
-		"WARN":  3,
-		"INFO":  4,
-		"DEBUG": 5,
-		"TRACE": 6,
+		"PANIC":  0,
+		"FATAL":  1,
+		"ERROR":  2,
+		"WARN":   3,
+		"NOTICE": 4,
+		"INFO":   5,
+		"DEBUG":  6,
+		"TRACE":  7,
 	}
 )
 
@@ -1952,9 +1955,9 @@ var (
 	file_daemon_started_service_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 	file_daemon_started_service_proto_msgTypes  = make([]protoimpl.MessageInfo, 26)
 	file_daemon_started_service_proto_goTypes   = []any{
-		(LogLevel)(0),                        // 0: daemon.LogLevel
-		(ConnectionEventType)(0),             // 1: daemon.ConnectionEventType
-		(ServiceStatus_Type)(0),              // 2: daemon.ServiceStatus.Type
+		LogLevel(0),                          // 0: daemon.LogLevel
+		ConnectionEventType(0),               // 1: daemon.ConnectionEventType
+		ServiceStatus_Type(0),                // 2: daemon.ServiceStatus.Type
 		(*ServiceStatus)(nil),                // 3: daemon.ServiceStatus
 		(*ReloadServiceRequest)(nil),         // 4: daemon.ReloadServiceRequest
 		(*SubscribeStatusRequest)(nil),       // 5: daemon.SubscribeStatusRequest
@@ -1984,7 +1987,6 @@ var (
 		(*emptypb.Empty)(nil),                // 29: google.protobuf.Empty
 	}
 )
-
 var file_daemon_started_service_proto_depIdxs = []int32{
 	2,  // 0: daemon.ServiceStatus.status:type_name -> daemon.ServiceStatus.Type
 	28, // 1: daemon.Log.messages:type_name -> daemon.Log.Message

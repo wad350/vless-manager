@@ -1,0 +1,65 @@
+{
+  "log": {
+    "level": "error"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen_port": 7897
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "failover",
+      "tag": "failover-out",
+      //   - "sequential" (default): try outbounds in order; return the last error
+      //     after exhausting them all.
+      //   - "cycle":                keep retrying outbounds in round-robin forever
+      //     (useful for transient network outages on user devices).
+      "strategy": "cycle",
+      "delay": "2s", // wait between failed attempts; 0 = no delay
+      "outbounds": [
+        {
+          "type": "vless",
+          "tag": "vless-primary",
+          "server": "primary.example.com",
+          "server_port": 443,
+          "uuid": "9b65b7e1-04c8-4717-8f45-2aa61fd25937"
+        },
+        {
+          "type": "trojan",
+          "tag": "trojan-secondary",
+          "server": "secondary.example.com",
+          "server_port": 443,
+          "password": "trojan-password"
+        },
+        {
+          "type": "shadowsocks",
+          "tag": "ss-tertiary",
+          "server": "tertiary.example.com",
+          "server_port": 8388,
+          "method": "aes-128-gcm",
+          "password": "ss-password"
+        }
+      ]
+    }
+  ],
+  "route": {
+    "final": "failover-out",
+    "default_domain_resolver": "default",
+    "auto_detect_interface": true
+  }
+}

@@ -48,8 +48,8 @@ func TestParseVLESSXHTTPURI(t *testing.T) {
 	if srv.Network != "xhttp" {
 		t.Fatalf("network = %q, want xhttp", srv.Network)
 	}
-	if isSupportedServer(srv) {
-		t.Fatal("xhttp must be excluded by official sing-box")
+	if !isSupportedServer(srv) {
+		t.Fatal("xhttp must be supported by extended sing-box")
 	}
 }
 
@@ -143,8 +143,8 @@ func TestParseVLESSXHTTPExtra(t *testing.T) {
 	}
 }
 
-func TestBuildSingBoxRejectsXHTTP(t *testing.T) {
-	_, err := buildSingBoxVLESSOutbound(&VLESSServer{
+func TestBuildSingBoxSupportsXHTTP(t *testing.T) {
+	out, err := buildSingBoxVLESSOutbound(&VLESSServer{
 		Address: "example.com",
 		Port:    443,
 		UUID:    "00000000-0000-0000-0000-000000000000",
@@ -153,8 +153,41 @@ func TestBuildSingBoxRejectsXHTTP(t *testing.T) {
 		Host:    "cdn.example",
 		Path:    "/app",
 	})
-	if err == nil {
-		t.Fatal("official sing-box must reject xhttp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := out["transport"].(map[string]any)
+	if transport["type"] != "xhttp" || transport["mode"] != "stream-up" || transport["host"] != "cdn.example" || transport["path"] != "/app" {
+		t.Fatalf("XHTTP transport generated incorrectly: %#v", transport)
+	}
+	if transport["x_padding_bytes"] != "100-1000" {
+		t.Fatalf("default XHTTP padding = %v", transport["x_padding_bytes"])
+	}
+}
+
+func TestBuildSingBoxXHTTPPreservesExtendedOptions(t *testing.T) {
+	extra := json.RawMessage(`{"mode":"auto","xPaddingBytes":"","scMaxEachPostBytes":0,"noSSEHeader":false,"uplinkHTTPMethod":"POST","sessionIDKey":"X-Auth-Token","sessionIDPlacement":"header","xmux":{"maxConcurrency":"16-32","hKeepAlivePeriod":0}}`)
+	out, err := buildSingBoxVLESSOutbound(&VLESSServer{
+		Address: "example.com", Port: 443, UUID: "00000000-0000-0000-0000-000000000000",
+		Network: "xhttp", Security: "tls", SNI: "example.com", Path: "/sync", Host: "cdn.example",
+		Extra: extra,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := out["transport"].(map[string]any)
+	if transport["session_key"] != "X-Auth-Token" || transport["session_placement"] != "header" || transport["uplink_http_method"] != "POST" {
+		t.Fatalf("extended fields lost: %#v", transport)
+	}
+	if transport["x_padding_bytes"] != "100-1000" {
+		t.Fatalf("empty provider padding was not normalized: %#v", transport)
+	}
+	if _, exists := transport["sc_max_each_post_bytes"]; exists {
+		t.Fatalf("zero provider post size must use the engine default: %#v", transport)
+	}
+	xmux := transport["xmux"].(map[string]any)
+	if xmux["max_concurrency"] != "16-32" || xmux["h_keep_alive_period"] != float64(0) {
+		t.Fatalf("xmux fields lost: %#v", xmux)
 	}
 }
 
@@ -173,6 +206,19 @@ func TestBuildSingBoxSupportsQUIC(t *testing.T) {
 	transport := out["transport"].(map[string]any)
 	if transport["type"] != "quic" {
 		t.Fatalf("transport.type = %v, want quic", transport["type"])
+	}
+}
+
+func TestBuildSingBoxDefaultsUDPToXUDP(t *testing.T) {
+	out, err := buildSingBoxVLESSOutbound(&VLESSServer{
+		Address: "example.com", Port: 443,
+		UUID: "00000000-0000-0000-0000-000000000000", Network: "tcp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["packet_encoding"] != "xudp" {
+		t.Fatalf("default packet_encoding = %v, want xudp", out["packet_encoding"])
 	}
 }
 

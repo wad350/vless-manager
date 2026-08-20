@@ -5,16 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-const (
-	operationLoadRetry = 15 * time.Second
-	defaultStallLimit  = 90 * time.Second
-)
+const defaultStallLimit = 90 * time.Second
 
 var errOperationCancelled = errors.New("операция отменена")
 
@@ -75,8 +73,6 @@ type operationCoordinator struct {
 	cancel context.CancelFunc
 	wake   chan struct{}
 	dedupe map[string]bool
-	load   func() (float64, bool)
-	retry  time.Duration
 }
 
 type operationLease struct {
@@ -92,8 +88,6 @@ func newOperationCoordinator(pm *ProcessManager) *operationCoordinator {
 		pm:     pm,
 		wake:   make(chan struct{}, 1),
 		dedupe: make(map[string]bool),
-		load:   operationSystemLoad,
-		retry:  operationLoadRetry,
 	}
 	go c.worker()
 	return c
@@ -237,21 +231,6 @@ func (c *operationCoordinator) worker() {
 			<-c.wake
 			continue
 		}
-		if op.req.Source == "background" {
-			load, high := c.load()
-			if high {
-				c.deferBackground(op, load)
-				timer := time.NewTimer(c.retry)
-				select {
-				case <-timer.C:
-				case <-c.wake:
-					if !timer.Stop() {
-						<-timer.C
-					}
-				}
-				continue
-			}
-		}
 		c.execute(op)
 	}
 }
@@ -279,18 +258,6 @@ func (c *operationCoordinator) next() *queuedOperation {
 		return op
 	}
 	return nil
-}
-
-func (c *operationCoordinator) deferBackground(op *queuedOperation, load float64) {
-	c.mu.Lock()
-	op.view.State = "deferred"
-	op.view.Message = fmt.Sprintf("Высокая нагрузка (LA %.2f), запуск отложен", load)
-	op.view.UpdatedAt = time.Now()
-	c.queue = append(c.queue, op)
-	c.mu.Unlock()
-	c.pm.event(serviceLogInfo, "operations", "operation.deferred",
-		"фоновая операция отложена из-за высокой нагрузки",
-		field("operation_id", op.view.ID), field("kind", op.req.Kind), field("load_1", load))
 }
 
 func (c *operationCoordinator) execute(op *queuedOperation) {
@@ -410,7 +377,7 @@ func (c *operationCoordinator) CancelActive() bool {
 }
 
 func (c *operationCoordinator) Snapshot() operationSnapshot {
-	load, high := c.load()
+	load, high := operationSystemLoad()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	result := operationSnapshot{HighLoad: high, Load1: load, Queue: make([]operationView, len(c.queue))}
@@ -471,6 +438,5 @@ func operationSystemLoad() (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	// Keep one hardware thread available for ndm and packet forwarding.
-	return load, load >= float64(runtimeCPULimit)
+	return load, load >= float64(runtime.GOMAXPROCS(0))
 }

@@ -30,7 +30,7 @@ chmod 755 "$PKG_DIR/opt/etc/init.d/S99vless-manager"
 # Vendored iptables IPK so postinst can install it offline when Entware
 # repo is unreachable (typical for LTE setups with DPI). The router won't
 # have any routing applied without iptables — this is a hard runtime dep.
-if [ -f "$SCRIPT_DIR/vendor/iptables_kn.ipk" ]; then
+if [ "$ARCH" = "mipsel-3.4" ] && [ -f "$SCRIPT_DIR/vendor/iptables_kn.ipk" ]; then
     cp "$SCRIPT_DIR/vendor/iptables_kn.ipk" "$PKG_DIR/opt/share/vless-manager/iptables_kn.ipk"
 fi
 
@@ -42,11 +42,9 @@ Architecture: ${ARCH}
 Maintainer: local
 Description: VLESS proxy manager with WebUI for Keenetic routers. Embeds sing-box
  as a library and runs a TUN/system-stack transparent tunnel. Policy routing
- sends LAN and router TCP/UDP traffic through VLESS while LAN/private traffic,
- DNS, QUIC fallback drops, and manager health probes stay on the WAN route.
- iptables is shipped bundled (postinst unpacks /opt/share/vless-manager/iptables_kn.ipk
- if iptables is missing) so the package installs on a fresh router without
- reaching the Entware repo.
+ sends all external LAN and router TCP/UDP traffic through VLESS while
+ LAN/private traffic and manager health probes stay on the WAN route.
+ The MIPS package bundles iptables for offline installation on Keenetic.
 EOF
 
 cat > "$PKG_DIR/CONTROL/postinst" <<'EOF'

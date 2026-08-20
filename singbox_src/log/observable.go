@@ -137,7 +137,7 @@ func (l *observableLogger) Log(ctx context.Context, level Level, args []any) {
 			os.Exit(1)
 		}
 	}
-	if l.platformWriter != nil && level <= l.level {
+	if l.platformWriter != nil {
 		l.platformWriter.WriteMessage(level, l.platformFormatter.Format(ctx, level, l.tag, F.ToString(args...), nowTime))
 	}
 }
@@ -152,6 +152,10 @@ func (l *observableLogger) Debug(args ...any) {
 
 func (l *observableLogger) Info(args ...any) {
 	l.InfoContext(context.Background(), args...)
+}
+
+func (l *observableLogger) Notice(args ...any) {
+	l.NoticeContext(context.Background(), args...)
 }
 
 func (l *observableLogger) Warn(args ...any) {
@@ -180,6 +184,10 @@ func (l *observableLogger) DebugContext(ctx context.Context, args ...any) {
 
 func (l *observableLogger) InfoContext(ctx context.Context, args ...any) {
 	l.Log(ctx, LevelInfo, args)
+}
+
+func (l *observableLogger) NoticeContext(ctx context.Context, args ...any) {
+	l.Log(ctx, LevelNotice, args)
 }
 
 func (l *observableLogger) WarnContext(ctx context.Context, args ...any) {

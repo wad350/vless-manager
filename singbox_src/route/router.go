@@ -33,7 +33,9 @@ type Router struct {
 	dnsTransport      adapter.DNSTransportManager
 	connection        adapter.ConnectionManager
 	network           adapter.NetworkManager
+	defaultOutbound   adapter.Outbound
 	rules             []adapter.Rule
+	final             string
 	needFindProcess   bool
 	ruleSets          []adapter.RuleSet
 	ruleSetMap        map[string]adapter.RuleSet
@@ -42,7 +44,7 @@ type Router struct {
 	pauseManager      pause.Manager
 	trackers          []adapter.ConnectionTracker
 	platformInterface adapter.PlatformInterface
-	started           bool
+	started           chan struct{}
 }
 
 func NewRouter(ctx context.Context, logFactory log.Factory, options option.RouteOptions, dnsOptions option.DNSOptions) *Router {
@@ -56,10 +58,12 @@ func NewRouter(ctx context.Context, logFactory log.Factory, options option.Route
 		connection:        service.FromContext[adapter.ConnectionManager](ctx),
 		network:           service.FromContext[adapter.NetworkManager](ctx),
 		rules:             make([]adapter.Rule, 0, len(options.Rules)),
+		final:             options.Final,
 		ruleSetMap:        make(map[string]adapter.RuleSet),
 		needFindProcess:   hasRule(options.Rules, isProcessRule) || hasDNSRule(dnsOptions.Rules, isProcessDNSRule) || options.FindProcess,
 		pauseManager:      service.FromContext[pause.Manager](ctx),
 		platformInterface: service.FromContext[adapter.PlatformInterface](ctx),
+		started:           make(chan struct{}),
 	}
 }
 
@@ -168,7 +172,16 @@ func (r *Router) Start(stage adapter.StartStage) error {
 				return E.Cause(err, "post start rule_set[", ruleSet.Name(), "]")
 			}
 		}
-		r.started = true
+		if r.final != "" {
+			defaultOutbound, loaded := r.outbound.Outbound(r.final)
+			if !loaded {
+				return E.New("outbound not found: ", r.final)
+			}
+			r.defaultOutbound = defaultOutbound
+		} else {
+			r.defaultOutbound = r.outbound.Default()
+		}
+		close(r.started)
 		return nil
 	case adapter.StartStateStarted:
 		for _, ruleSet := range r.ruleSets {

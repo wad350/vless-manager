@@ -1,0 +1,31 @@
+{
+  "inbounds": [
+    {
+      "type": "trusttunnel",
+      "tag": "trusttunnel-in",
+      "listen": "::",
+      "listen_port": 443,
+      "network": ["tcp", "udp"],
+      "users": [
+        {
+          "name": "user1",
+          "password": "password1"
+        }
+      ],
+      "congestion_controller": "bbr", // bbr, bbr_standard, bbr2, bbr2_variant, cubic, reno
+      "cwnd": 32,
+      "tls": {
+        "enabled": true,
+        "alpn": ["h2", "h3"],
+        "certificate_path": "/path/to/cert.pem",
+        "key_path": "/path/to/key.pem"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+}

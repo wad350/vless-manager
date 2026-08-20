@@ -1,0 +1,53 @@
+{
+  "log": {
+    "level": "error"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "0.0.0.0",
+      "listen_port": 443,
+      "transport": {
+        "type": "http"
+      },
+      "users": [
+        {
+          "name": "user1",
+          "uuid": "9b65b7e1-04c8-4717-8f45-2aa61fd25937"
+        }
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "rate-limiter",
+      "tag": "rate-limiter",
+      "strategy": "token-bucket", // leaky-bucket, sliding-window, fixed-window
+      "connection_type": "hwid", // mux, source_ip
+      "count": 20, // max requests per interval per connection
+      "interval": "1s",
+      "route": { // https://sing-box.sagernet.org/configuration/route/#structure
+        "rules": [],
+        "final": "direct"
+      }
+    }
+  ],
+  "route": {
+    "final": "rate-limiter",
+    "default_domain_resolver": "default",
+    "auto_detect_interface": true
+  }
+}

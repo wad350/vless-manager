@@ -53,8 +53,8 @@ type AppSettings struct {
 	// --- Ping ---
 	PingTimeoutSec int    `json:"ping_timeout_sec"`
 	PingTestURL    string `json:"ping_test_url"`
-	// PingMaxParallel caps parallel temporary sing-box instances. 0 or 1 is
-	// sequential; 2 is the validated maximum for this 124 MB router.
+	// PingMaxParallel controls parallel temporary sing-box instances. 0 or 1
+	// is sequential; larger values are applied as configured.
 	PingMaxParallel    int `json:"ping_max_parallel"`
 	PingStartupSleepMS int `json:"ping_startup_sleep_ms"` // wait for SOCKS listener inside temp sing-box
 	// Selection mode is priority (lowest latency in the first subscription
@@ -160,7 +160,6 @@ func (s AppSettings) validate() error {
 		{"internet_check_interval_sec", s.InternetCheckIntervalSec, 30, 86400},
 		{"internet_check_timeout_sec", s.InternetCheckTimeoutSec, 1, 120},
 		{"ping_timeout_sec", s.PingTimeoutSec, 3, 120},
-		{"ping_max_parallel", s.PingMaxParallel, 0, 2},
 		{"ping_startup_sleep_ms", s.PingStartupSleepMS, 50, 5000},
 		{"ping_cache_max_age_min", s.PingCacheMaxAgeMin, 1, 1440},
 	}
@@ -168,6 +167,9 @@ func (s AppSettings) validate() error {
 		if rule.value < rule.min || rule.value > rule.max {
 			return fmt.Errorf("%s must be between %d and %d", rule.name, rule.min, rule.max)
 		}
+	}
+	if s.PingMaxParallel < 0 {
+		return fmt.Errorf("ping_max_parallel must not be negative")
 	}
 	if err := validateHTTPURL("ping_test_url", s.PingTestURL); err != nil {
 		return err

@@ -18,6 +18,7 @@ import (
 	"github.com/sagernet/sing-box/adapter/endpoint"
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/adapter/outbound"
+	"github.com/sagernet/sing-box/adapter/provider"
 	boxService "github.com/sagernet/sing-box/adapter/service"
 	"github.com/sagernet/sing-box/dns"
 	"github.com/sagernet/sing-box/dns/transport/local"
@@ -254,13 +255,14 @@ func newBoxInstance(ctx context.Context, cfgJSON []byte, logs *ringBuffer) (*box
 	vless.RegisterOutbound(outboundReg)
 
 	endpointReg := endpoint.NewRegistry()
+	providerReg := provider.NewRegistry()
 
 	dnsReg := dns.NewTransportRegistry()
 	local.RegisterTransport(dnsReg)
 
 	serviceReg := boxService.NewRegistry()
 
-	ctx = box.Context(ctx, inboundReg, outboundReg, endpointReg, dnsReg, serviceReg)
+	ctx = box.Context(ctx, inboundReg, outboundReg, endpointReg, providerReg, dnsReg, serviceReg)
 
 	var opts option.Options
 	if err := singJSON.UnmarshalContext(ctx, cfgJSON, &opts); err != nil {

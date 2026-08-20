@@ -14,11 +14,36 @@ PREFIX ?= $(shell go env GOPATH)
 SING_FFI ?= sing-ffi
 LIBBOX_FFI_CONFIG ?= ./experimental/libbox/ffi.json
 
+ADMIN_PANEL_DIR = service/admin_panel
+ADMIN_PANEL_WEB = $(ADMIN_PANEL_DIR)/web
+ADMIN_PANEL_DIST = $(ADMIN_PANEL_DIR)/dist
+ADMIN_PANEL_TAGS = $(TAGS),with_admin_panel
+
+DOCKER_IMAGE ?= shtorm7/sing-box-extended
+DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
+
+CRONET_GO_PATH ?= $(shell pwd)/cronet-go
+
 .PHONY: test release docs build
 
 build:
-	export GOTOOLCHAIN=local && \
 	go build $(MAIN_PARAMS) $(MAIN)
+
+build_admin_panel:
+	cd $(ADMIN_PANEL_WEB) && \
+		npm install --no-fund --no-audit && \
+		npm run build
+	go run ./cmd/internal/admin_panel_pack \
+		-dir $(ADMIN_PANEL_DIST)
+
+build_naive:
+	cd $(CRONET_GO_PATH) && \
+	for arch in amd64 arm64 386 arm mipsle mips64le riscv64 loong64; do \
+		go run ./cmd/build-naive --target=linux/$$arch download-toolchain; \
+	done && \
+	for arch in amd64 arm64 386 arm mipsle riscv64 loong64; do \
+		go run ./cmd/build-naive --target=linux/$$arch --libc=musl download-toolchain; \
+	done
 
 race:
 	export GOTOOLCHAIN=local && \
@@ -63,17 +88,16 @@ proto_install:
 update_certificates:
 	go run ./cmd/internal/update_certificates
 
-release:
-	go run ./cmd/internal/build goreleaser release --clean --skip publish
+release: build_admin_panel build_naive
+	CRONET_GO_PATH=$(CRONET_GO_PATH) go run ./cmd/internal/build goreleaser release --skip=validate --clean -p 3 --skip publish
 	mkdir dist/release
 	mv dist/*.tar.gz \
 		dist/*.zip \
-		dist/*.deb \
-		dist/*.rpm \
-		dist/*_amd64.pkg.tar.zst \
-		dist/*_arm64.pkg.tar.zst \
+		dist/*.ipk \
+		dist/*.apk \
 		dist/release
 	ghr --replace --draft --prerelease -p 5 "v${VERSION}" dist/release
+	./codeberg-release.sh --replace --draft --prerelease -p 5 "v${VERSION}" dist/release
 	rm -r dist/release
 
 release_repo:
@@ -82,23 +106,32 @@ release_repo:
 release_install:
 	go install -v github.com/tcnksm/ghr@latest
 
+release_docker:
+	sudo docker buildx build \
+		--platform $(DOCKER_PLATFORMS) \
+		-t $(DOCKER_IMAGE):latest \
+		-t $(DOCKER_IMAGE):$(VERSION) \
+		--push \
+		--network=host \
+		.
+
 update_android_version:
 	go run ./cmd/internal/update_android_version
 
 build_android:
-	cd ../sing-box-for-android && ./gradlew :app:clean :app:assembleOtherRelease :app:assembleOtherLegacyRelease && ./gradlew --stop
+	cd ../sing-box-for-android && ./gradlew :app:clean :app:assembleOtherRelease && ./gradlew --stop
 
 upload_android:
 	mkdir -p dist/release_android
 	cp ../sing-box-for-android/app/build/outputs/apk/other/release/*.apk dist/release_android
-	cp ../sing-box-for-android/app/build/outputs/apk/otherLegacy/release/*.apk dist/release_android
 	VERSION_CODE=$$(grep VERSION_CODE ../sing-box-for-android/version.properties | cut -d= -f2); \
 	VERSION_NAME=$$(grep VERSION_NAME ../sing-box-for-android/version.properties | cut -d= -f2); \
 	printf '{\n  "version_code": %s,\n  "version_name": "%s"\n}\n' "$$VERSION_CODE" "$$VERSION_NAME" > dist/release_android/SFA-version-metadata.json
 	ghr --replace --draft --prerelease -p 5 "v${VERSION}" dist/release_android
+	./codeberg-release.sh --replace --draft --prerelease -p 5 "v${VERSION}" dist/release_android
 	rm -rf dist/release_android
 
-release_android: build_android upload_android
+release_android: lib_android update_android_version build_android upload_android
 
 publish_android:
 	cd ../sing-box-for-android && ./gradlew :app:publishPlayReleaseBundle && ./gradlew --stop

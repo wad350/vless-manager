@@ -53,7 +53,7 @@ func (m Hysteria2Masquerade) MarshalJSON() ([]byte, error) {
 	default:
 		return nil, E.New("unknown masquerade type: ", m.Type)
 	}
-	return badjson.MarshallObjects((_Hysteria2Masquerade)(m), v)
+	return badjson.MarshallObjects(_Hysteria2Masquerade(m), v)
 }
 
 func (m *Hysteria2Masquerade) UnmarshalJSON(bytes []byte) error {

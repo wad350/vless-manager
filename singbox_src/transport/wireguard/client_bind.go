@@ -21,32 +21,28 @@ import (
 var _ conn.Bind = (*ClientBind)(nil)
 
 type ClientBind struct {
-	ctx                 context.Context
-	logger              logger.Logger
-	pauseManager        pause.Manager
-	bindCtx             context.Context
-	bindDone            context.CancelFunc
-	dialer              N.Dialer
-	reservedForEndpoint map[netip.AddrPort][3]uint8
-	connAccess          sync.Mutex
-	conn                *wireConn
-	done                chan struct{}
-	isConnect           bool
-	connectAddr         netip.AddrPort
-	reserved            [3]uint8
+	ctx          context.Context
+	logger       logger.Logger
+	pauseManager pause.Manager
+	bindCtx      context.Context
+	bindDone     context.CancelFunc
+	dialer       N.Dialer
+	connAccess   sync.Mutex
+	conn         *wireConn
+	done         chan struct{}
+	isConnect    bool
+	connectAddr  netip.AddrPort
 }
 
-func NewClientBind(ctx context.Context, logger logger.Logger, dialer N.Dialer, isConnect bool, connectAddr netip.AddrPort, reserved [3]uint8) *ClientBind {
+func NewClientBind(ctx context.Context, logger logger.Logger, dialer N.Dialer, isConnect bool, connectAddr netip.AddrPort) *ClientBind {
 	return &ClientBind{
-		ctx:                 ctx,
-		logger:              logger,
-		pauseManager:        service.FromContext[pause.Manager](ctx),
-		dialer:              dialer,
-		reservedForEndpoint: make(map[netip.AddrPort][3]uint8),
-		done:                make(chan struct{}),
-		isConnect:           isConnect,
-		connectAddr:         connectAddr,
-		reserved:            reserved,
+		ctx:          ctx,
+		logger:       logger,
+		pauseManager: service.FromContext[pause.Manager](ctx),
+		dialer:       dialer,
+		done:         make(chan struct{}),
+		isConnect:    isConnect,
+		connectAddr:  connectAddr,
 	}
 }
 
@@ -134,10 +130,6 @@ func (c *ClientBind) receive(packets [][]byte, sizes []int, eps []conn.Endpoint)
 		return
 	}
 	sizes[0] = n
-	if n > 3 {
-		b := packets[0]
-		clear(b[1:4])
-	}
 	eps[0] = remoteEndpoint(M.SocksaddrFromNet(addr).Unwrap().AddrPort())
 	count = 1
 	return
@@ -174,13 +166,6 @@ func (c *ClientBind) Send(bufs [][]byte, ep conn.Endpoint, offset int) error {
 		if offset > 0 {
 			buf = buf[offset:]
 		}
-		if len(buf) > 3 {
-			reserved, loaded := c.reservedForEndpoint[destination]
-			if !loaded {
-				reserved = c.reserved
-			}
-			copy(buf[1:4], reserved[:])
-		}
 		_, err = udpConn.WriteToUDPAddrPort(buf, destination)
 		if err != nil {
 			udpConn.Close()
@@ -200,10 +185,6 @@ func (c *ClientBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 
 func (c *ClientBind) BatchSize() int {
 	return 1
-}
-
-func (c *ClientBind) SetReservedForEndpoint(destination netip.AddrPort, reserved [3]byte) {
-	c.reservedForEndpoint[destination] = reserved
 }
 
 type wireConn struct {
@@ -245,16 +226,16 @@ func (e remoteEndpoint) SrcToString() string {
 }
 
 func (e remoteEndpoint) DstToString() string {
-	return (netip.AddrPort)(e).String()
+	return netip.AddrPort(e).String()
 }
 
 func (e remoteEndpoint) DstToBytes() []byte {
-	b, _ := (netip.AddrPort)(e).MarshalBinary()
+	b, _ := netip.AddrPort(e).MarshalBinary()
 	return b
 }
 
 func (e remoteEndpoint) DstIP() netip.Addr {
-	return (netip.AddrPort)(e).Addr()
+	return netip.AddrPort(e).Addr()
 }
 
 func (e remoteEndpoint) SrcIP() netip.Addr {

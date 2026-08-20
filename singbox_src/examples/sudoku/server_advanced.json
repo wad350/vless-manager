@@ -1,0 +1,22 @@
+{
+  "inbounds": [
+    {
+      "type": "sudoku",
+      "listen": "::",
+      "listen_port": 443,
+      "key": "your-secret-key",
+      "aead_method": "aes-128-gcm",
+      "table_type": "prefer_entropy",
+      "padding_min": 10,
+      "padding_max": 50,
+      "http_mask_mode": "stream",
+      "path_root": "secret",
+      "fallback": "127.0.0.1:8080"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct"
+    }
+  ]
+}

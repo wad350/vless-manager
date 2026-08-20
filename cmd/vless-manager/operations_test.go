@@ -12,8 +12,6 @@ import (
 func testCoordinator(t *testing.T) *operationCoordinator {
 	t.Helper()
 	c := newOperationCoordinator(NewProcessManager(t.TempDir()))
-	c.load = func() (float64, bool) { return 0, false }
-	c.retry = 5 * time.Millisecond
 	return c
 }
 
@@ -133,46 +131,5 @@ func TestOperationCoordinatorCancelsStalledWork(t *testing.T) {
 	}
 	if snapshot := c.Snapshot(); snapshot.Active != nil {
 		t.Fatalf("stalled operation remained active: %+v", snapshot.Active)
-	}
-}
-
-func TestOperationCoordinatorManualWorkBypassesDeferredBackground(t *testing.T) {
-	c := testCoordinator(t)
-	var high atomic.Bool
-	high.Store(true)
-	c.load = func() (float64, bool) { return 8, high.Load() }
-	backgroundDone := make(chan error, 1)
-	backgroundStarted := make(chan struct{})
-	go func() {
-		backgroundDone <- c.Run(context.Background(), operationRequest{
-			Kind: "subscriptions", Source: "background", DedupeKey: "refresh",
-		}, func(context.Context, func(operationProgress)) error {
-			close(backgroundStarted)
-			return nil
-		})
-	}()
-	time.Sleep(15 * time.Millisecond)
-	manualDone := make(chan error, 1)
-	go func() {
-		manualDone <- c.Run(context.Background(), operationRequest{Kind: "ping", Source: "manual"},
-			func(context.Context, func(operationProgress)) error { return nil })
-	}()
-	select {
-	case err := <-manualDone:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("manual operation was blocked by deferred background work")
-	}
-	high.Store(false)
-	c.signal()
-	select {
-	case <-backgroundStarted:
-	case <-time.After(time.Second):
-		t.Fatal("background operation did not resume")
-	}
-	if err := <-backgroundDone; err != nil {
-		t.Fatal(err)
 	}
 }

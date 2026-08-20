@@ -133,7 +133,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		if requestBody != nil {
 			conn = bufio.NewCachedConn(conn, requestBody)
 		}
-		s.handler.NewConnectionEx(DupContext(request.Context()), conn, source, M.Socksaddr{}, nil)
+		s.handler.NewConnectionEx(HWIDContext(DupContext(request.Context()), request.Header), conn, source, M.Socksaddr{}, nil)
 	} else {
 		writer.WriteHeader(http.StatusOK)
 		flusher := writer.(http.Flusher)
@@ -143,7 +143,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			NewHTTPConn(request.Body, writer),
 			flusher,
 		})
-		s.handler.NewConnectionEx(request.Context(), conn, source, M.Socksaddr{}, N.OnceClose(func(it error) {
+		s.handler.NewConnectionEx(HWIDContext(request.Context(), request.Header), conn, source, M.Socksaddr{}, N.OnceClose(func(it error) {
 			close(done)
 		}))
 		<-done

@@ -1,0 +1,68 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "0.0.0.0",
+      "listen_port": 443,
+      "transport": {
+        "type": "http"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "traffic-limiter",
+      "tag": "traffic-limiter",
+      // "manager" strategy: per-user traffic quotas are loaded from the
+      // manager database and updated live (no need to list users in this file).
+      "strategy": "manager",
+      "route": {
+        "rules": [],
+        "final": "direct"
+      }
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
+      }
+    ],
+    "final": "traffic-limiter"
+  },
+  "services": [
+    {
+      "type": "manager",
+      "tag": "my-manager",
+      "database": {
+        "driver": "sqlite",
+        "dsn": "file:manager.db?_pragma=foreign_keys(on)&_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)"
+      }
+    },
+    {
+      "type": "node",
+      "tag": "my-node",
+      "uuid": "e6eceb84-ad66-474b-8641-142499db7c6e",
+      "manager": "my-manager",
+      "inbounds": ["vless-in"],
+      "traffic_limiters": ["traffic-limiter"]
+    }
+  ]
+}

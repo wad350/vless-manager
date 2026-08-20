@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -410,6 +411,10 @@ func (u *appUpdater) startInstall() (UpdateStatus, error) {
 
 func (u *appUpdater) installStarted(ctx context.Context) (UpdateStatus, error) {
 	u.setInstallProgress("checking", updateStateMessage("checking"), 4, 0, 0, 0)
+	architecture, err := currentPackageArchitecture()
+	if err != nil {
+		return u.failInstall(err)
+	}
 
 	updatePath := filepath.Join(os.TempDir(), "vless-manager-update.ipk")
 
@@ -438,11 +443,11 @@ func (u *appUpdater) installStarted(ctx context.Context) (UpdateStatus, error) {
 			status.Available = true
 			status.ReleaseURL = release.HTMLURL
 		})
-		pkg, checksum, assetErr := releaseAssets(release, latest)
+		pkg, checksum, assetErr := releaseAssets(release, latest, architecture)
 		if assetErr != nil {
 			return assetErr
 		}
-		return downloadVerifiedPackage(ctx, client, pkg, checksum, latest, updatePath,
+		return downloadVerifiedPackage(ctx, client, pkg, checksum, latest, architecture, updatePath,
 			func(phase string, downloaded, total int64) {
 				switch phase {
 				case "checksum":
@@ -605,8 +610,19 @@ func fetchLatestRelease(ctx context.Context, client *http.Client, endpoint strin
 	return release, nil
 }
 
-func releaseAssets(release githubRelease, version string) (releaseAsset, releaseAsset, error) {
-	packageName := "vless-manager_" + version + "_mipsel-3.4.ipk"
+func currentPackageArchitecture() (string, error) {
+	switch runtime.GOARCH {
+	case "mipsle":
+		return "mipsel-3.4", nil
+	case "arm64":
+		return "aarch64-3.10", nil
+	default:
+		return "", fmt.Errorf("автообновление не поддерживает архитектуру %s", runtime.GOARCH)
+	}
+}
+
+func releaseAssets(release githubRelease, version, architecture string) (releaseAsset, releaseAsset, error) {
+	packageName := "vless-manager_" + version + "_" + architecture + ".ipk"
 	checksumName := packageName + ".sha256"
 	var pkg, checksum releaseAsset
 	for _, asset := range release.Assets {
@@ -653,6 +669,7 @@ func downloadVerifiedPackage(
 	pkg releaseAsset,
 	checksum releaseAsset,
 	version string,
+	architecture string,
 	destination string,
 	progress func(phase string, downloaded, total int64),
 ) error {
@@ -718,7 +735,7 @@ func downloadVerifiedPackage(
 		_ = os.Remove(tmp)
 		return errors.New("SHA-256 обновления не совпадает")
 	}
-	if err := validateIPK(tmp, version); err != nil {
+	if err := validateIPK(tmp, version, architecture); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
@@ -773,7 +790,7 @@ func fetchChecksum(ctx context.Context, client *http.Client, rawURL string) (str
 	return strings.ToLower(value[0]), nil
 }
 
-func validateIPK(path, version string) error {
+func validateIPK(path, version, architecture string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("не удалось открыть IPK: %w", err)
@@ -803,12 +820,12 @@ func validateIPK(path, version string) error {
 			}
 			debianBinary = string(data) == "2.0\n"
 		case "control.tar.gz":
-			controlOK, err = validateIPKControl(outer, version)
+			controlOK, err = validateIPKControl(outer, version, architecture)
 			if err != nil {
 				return err
 			}
 		case "data.tar.gz":
-			managerBinary, err = validateIPKData(outer)
+			managerBinary, err = validateIPKData(outer, architecture)
 			if err != nil {
 				return err
 			}
@@ -821,7 +838,7 @@ func validateIPK(path, version string) error {
 	return nil
 }
 
-func validateIPKControl(reader io.Reader, version string) (bool, error) {
+func validateIPKControl(reader io.Reader, version, architecture string) (bool, error) {
 	gzipReader, err := gzip.NewReader(reader)
 	if err != nil {
 		return false, fmt.Errorf("некорректный control.tar.gz: %w", err)
@@ -846,7 +863,7 @@ func validateIPKControl(reader io.Reader, version string) (bool, error) {
 		fields := parsePackageControl(data)
 		if fields["Package"] != "vless-manager" ||
 			fields["Version"] != version ||
-			fields["Architecture"] != "mipsel-3.4" {
+			fields["Architecture"] != architecture {
 			return false, fmt.Errorf(
 				"неподходящий IPK: package=%q version=%q architecture=%q",
 				fields["Package"], fields["Version"], fields["Architecture"])
@@ -868,7 +885,7 @@ func parsePackageControl(data []byte) map[string]string {
 	return fields
 }
 
-func validateIPKData(reader io.Reader) (bool, error) {
+func validateIPKData(reader io.Reader, architecture string) (bool, error) {
 	gzipReader, err := gzip.NewReader(reader)
 	if err != nil {
 		return false, fmt.Errorf("некорректный data.tar.gz: %w", err)
@@ -890,15 +907,30 @@ func validateIPKData(reader io.Reader) (bool, error) {
 		if _, err := io.ReadFull(archive, elfHeader); err != nil {
 			return false, fmt.Errorf("бинарник в IPK повреждён: %w", err)
 		}
-		if !bytes.Equal(elfHeader[:4], []byte{0x7f, 'E', 'L', 'F'}) ||
-			elfHeader[4] != 1 ||
-			elfHeader[5] != 1 ||
-			elfHeader[18] != 8 ||
-			elfHeader[19] != 0 {
-			return false, errors.New("бинарник в IPK не является MIPSLE ELF32")
+		if err := validateELFArchitecture(elfHeader, architecture); err != nil {
+			return false, err
 		}
 		return true, nil
 	}
+}
+
+func validateELFArchitecture(header []byte, architecture string) error {
+	if len(header) < 20 || !bytes.Equal(header[:4], []byte{0x7f, 'E', 'L', 'F'}) || header[5] != 1 {
+		return errors.New("бинарник в IPK не является little-endian ELF")
+	}
+	var class, machine byte
+	switch architecture {
+	case "mipsel-3.4":
+		class, machine = 1, 8
+	case "aarch64-3.10":
+		class, machine = 2, 183
+	default:
+		return fmt.Errorf("неизвестная архитектура IPK %q", architecture)
+	}
+	if header[4] != class || header[18] != machine || header[19] != 0 {
+		return fmt.Errorf("бинарник в IPK не соответствует архитектуре %s", architecture)
+	}
+	return nil
 }
 
 func schedulePackageUpdate(updatePath string) error {

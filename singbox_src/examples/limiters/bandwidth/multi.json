@@ -1,0 +1,81 @@
+{
+  "log": {
+    "level": "error"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "0.0.0.0",
+      "listen_port": 443,
+      "transport": {
+        "type": "http"
+      },
+      "users": [
+        {
+          "name": "user1",
+          "uuid": "9b65b7e1-04c8-4717-8f45-2aa61fd25937"
+        },
+        {
+          "name": "user2",
+          "uuid": "9b65b7e1-04c8-4717-8f45-2aa61fd25937"
+        }
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "bandwidth-limiter",
+      "tag": "bidirectional-bandwidth-limiter",
+      "strategy": "global",
+      "mode": "bidirectional",
+      "speed": "5MB",
+      "flow_keys": ["user", "destination"], // values: user, destination, ip, hwid, mux
+      "route": { // https://sing-box.sagernet.org/configuration/route/#structure
+        "rules": [],
+        "final": "direct"
+      }
+    },
+    {
+      "type": "bandwidth-limiter",
+      "tag": "upload-bandwidth-limiter",
+      "strategy": "global",
+      "mode": "upload",
+      "speed": "3MB",
+      "flow_keys": ["user", "destination"], // values: user, destination, ip, hwid, mux
+      "route": { // https://sing-box.sagernet.org/configuration/route/#structure
+        "rules": [],
+        "final": "bidirectional-bandwidth-limiter"
+      }
+    },
+    {
+      "type": "bandwidth-limiter",
+      "tag": "download-bandwidth-limiter",
+      "strategy": "global",
+      "mode": "download",
+      "speed": "3MB",
+      "flow_keys": ["user", "destination"], // values: user, destination, ip, hwid, mux
+      "route": { // https://sing-box.sagernet.org/configuration/route/#structure
+        "rules": [],
+        "final": "upload-bandwidth-limiter"
+      }
+    }
+  ],
+  "route": {
+    "final": "download-bandwidth-limiter",
+    "default_domain_resolver": "default",
+    "auto_detect_interface": true
+  }
+}

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,7 +21,7 @@ import (
 // Slow operations (ping tests, sing-box start/stop) must snapshot under lock
 // then release before doing the slow work, otherwise the UI status poll (2 s)
 // blocks for tens of seconds.
-// PingProgress reports the live state of a sequential ping run so the UI
+// PingProgress reports the live state of a ping run so the UI
 // (and /api/status) can show "3/7: тестирую Gold Россия".
 type PingProgress struct {
 	Running   bool      `json:"running"`
@@ -72,8 +72,8 @@ type apiServer struct {
 	// the user selects Connect on a server.
 	connectStartFn func(*Config) error
 
-	// pingRunMu serialises full ping cycles globally — prevents two parallel
-	// probe batches from overwhelming the modem on the 124 MB router.
+	// pingRunMu prevents overlapping full cycles from racing over shared
+	// progress and cache state. Concurrency inside one cycle is configurable.
 	pingRunMu sync.Mutex
 }
 
@@ -222,15 +222,18 @@ func (s *apiServer) runPingAllNamedCore(ctx context.Context, servers []VLESSServ
 
 	opID := s.pm.nextOperationID("ping")
 	started := time.Now()
-	effectiveParallel, parallelReason := effectivePingParallel(pingSettings.PingMaxParallel, deviceMemoryKB())
+	effectiveParallel := pingSettings.PingMaxParallel
+	if effectiveParallel < 1 {
+		effectiveParallel = 1
+	}
 	s.pm.event(serviceLogInfo, "ping", "batch.start",
 		"проверка серверов начата",
 		field("op_id", opID),
 		field("servers", len(servers)),
 		field("parallel_requested", pingSettings.PingMaxParallel),
 		field("parallel_effective", effectiveParallel),
-		field("parallel_limit_reason", parallelReason),
-		field("go_cpu_limit", runtimeCPULimit),
+		field("parallel_limit_reason", ""),
+		field("go_cpu_limit", runtime.GOMAXPROCS(0)),
 		field("timeout_ms", pingSettings.PingTimeout().Milliseconds()),
 		field("test_url", pingSettings.PingTestURL))
 
@@ -388,30 +391,6 @@ func (s *apiServer) pingStopGeneration() uint64 {
 
 func (s *apiServer) pingStoppedSince(generation uint64) bool {
 	return s.pingStopGeneration() != generation
-}
-
-func deviceMemoryKB() int64 {
-	data, err := os.ReadFile("/proc/meminfo")
-	if err != nil {
-		return 0
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		var total int64
-		if _, err := fmt.Sscanf(line, "MemTotal: %d kB", &total); err == nil {
-			return total
-		}
-	}
-	return 0
-}
-
-func effectivePingParallel(requested int, totalMemoryKB int64) (int, string) {
-	if requested <= 1 {
-		return 1, ""
-	}
-	if totalMemoryKB > 0 && totalMemoryKB < 256*1024 {
-		return 1, "memory_below_256mb"
-	}
-	return requested, ""
 }
 
 func (s *apiServer) pingServers(servers []VLESSServer) []PingResult {
@@ -2213,7 +2192,7 @@ func (s *apiServer) handlePing(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, []PingResult{})
 			return
 		}
-		// Slow op (sequential temp sing-box per server) — no lock held.
+		// Slow op (temporary sing-box instances) — no lock held.
 		results := s.runPingAll(all)
 		writeJSON(w, results)
 	default:

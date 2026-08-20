@@ -1,0 +1,71 @@
+{
+  "log": {
+    "level": "error"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "0.0.0.0",
+      "listen_port": 443,
+      "transport": {
+        "type": "http"
+      },
+      "users": [
+        {
+          "name": "user1",
+          "uuid": "9b65b7e1-04c8-4717-8f45-2aa61fd25937"
+        },
+        {
+          "name": "user2",
+          "uuid": "9b65b7e1-04c8-4717-8f45-2aa61fd25937"
+        }
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "bandwidth-limiter",
+      "tag": "bandwidth-limiter",
+      "strategy": "users",
+      "flow_keys": ["user", "destination"], // values: user, destination, ip, hwid, mux
+      "users": [
+        {
+          "name": "user1",
+          "strategy": "connection", // global
+          "mode": "bidirectional", // download, upload
+          "connection_type": "hwid", // mux, ip
+          "speed": "5MB" // 100KB, 1GB, etc.
+        },
+        {
+          "name": "user2",
+          "strategy": "connection", // global
+          "mode": "bidirectional", // download, upload
+          "connection_type": "hwid", // mux, ip
+          "speed": "1MB" // 100KB, 1GB, etc.
+        }
+      ],
+      "route": { // https://sing-box.sagernet.org/configuration/route/#structure
+        "rules": [],
+        "final": "direct"
+      }
+    }
+  ],
+  "route": {
+    "final": "bandwidth-limiter",
+    "default_domain_resolver": "default",
+    "auto_detect_interface": true
+  }
+}

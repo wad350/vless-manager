@@ -1,0 +1,91 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen_port": 7897
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": [
+        "direct"
+      ],
+      "providers": [
+        "my-inline"
+      ],
+      "default": "direct",
+      "interrupt_exist_connections": true
+    }
+  ],
+  "providers": [
+    {
+      "type": "inline",
+      "tag": "my-inline",
+      // Outbounds are listed in-place. They are registered with the
+      // provider on start and become available to any group that
+      // references this provider via "providers" or
+      // "use_all_providers".
+      "outbounds": [
+        {
+          "type": "shadowsocks",
+          "tag": "ss-hk",
+          "server": "hk.example.com",
+          "server_port": 8388,
+          "method": "aes-256-gcm",
+          "password": "password"
+        },
+        {
+          "type": "trojan",
+          "tag": "trojan-jp",
+          "server": "jp.example.com",
+          "server_port": 443,
+          "password": "password",
+          "tls": {
+            "enabled": true,
+            "server_name": "jp.example.com"
+          }
+        },
+        {
+          "type": "vless",
+          "tag": "vless-sg",
+          "server": "sg.example.com",
+          "server_port": 443,
+          "uuid": "00000000-0000-0000-0000-000000000000",
+          "tls": {
+            "enabled": true,
+            "server_name": "sg.example.com"
+          }
+        }
+      ],
+      "health_check": {
+        "enabled": true,
+        "url": "https://www.gstatic.com/generate_204",
+        "interval": "5m",
+        "timeout": "5s"
+      }
+    }
+  ],
+  "route": {
+    "final": "proxy",
+    "default_domain_resolver": "default",
+    "auto_detect_interface": true
+  }
+}

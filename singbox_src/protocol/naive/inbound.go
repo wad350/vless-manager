@@ -147,6 +147,10 @@ func (n *Inbound) Close() error {
 	)
 }
 
+func (n *Inbound) UpdateUsers(users []auth.User) {
+	n.authenticator.UpdateUsers(users)
+}
+
 func (n *Inbound) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	ctx := log.ContextWithNewID(request.Context())
 	if request.Method != "CONNECT" {

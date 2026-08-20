@@ -70,15 +70,10 @@ func generateSingBoxConfig(cfg *Config, srv *VLESSServer) ([]byte, error) {
 	}
 	outbounds := append(proxyOutbounds, directOut)
 
-	// DNS — local-only. Routing DNS through the VLESS tunnel on softfloat
-	// MIPS causes a death spiral: every new TCP connection triggers a
-	// sing-box DNS resolve through the tunnel; if the tunnel is flaky the
-	// resolve times out, spawning retries, which spawn more DNS lookups…
-	// kernel sys CPU hits 85 %, sshd can't fork, router watchdog fires.
-	//
-	// LAN clients' DNS (port 53) is bypassed in routing.go's mangle chain
-	// before it even reaches tun0, so dnsmasq handles it directly.
-	// Sing-box itself uses the router's resolv.conf for its own lookups.
+	// The engine's own resolver remains local and uses the router's
+	// resolv.conf. Client queries addressed to the router stay local because
+	// its LAN address matches the private-CIDR bypass. Queries addressed to a
+	// public resolver enter tun0 like any other TCP/UDP traffic.
 	dns := map[string]any{
 		"servers": []map[string]any{
 			{"tag": "dns_local", "type": "local"},
@@ -178,6 +173,10 @@ func buildSingBoxVLESSOutbound(srv *VLESSServer) (map[string]any, error) {
 		"server":      srv.Address,
 		"server_port": srv.Port,
 		"uuid":        srv.UUID,
+		// VLESS carries UDP over its TCP transport using XUDP. This is also
+		// sing-box's current default, but keeping it explicit protects global
+		// UDP routing from a future engine-default change.
+		"packet_encoding": orDefault(srv.PacketEncoding, "xudp"),
 		// A bad CDN/WS edge must fail quickly. Without an explicit cap,
 		// browsers can pile up hundreds of pending handshakes on a small
 		// router before the periodic health check replaces the server.
@@ -193,10 +192,6 @@ func buildSingBoxVLESSOutbound(srv *VLESSServer) (map[string]any, error) {
 	if srv.Flow != "" {
 		out["flow"] = srv.Flow
 	}
-	if srv.PacketEncoding != "" {
-		out["packet_encoding"] = srv.PacketEncoding
-	}
-
 	alpnList := splitCSV(srv.ALPN)
 	switch srv.Security {
 	case "reality":
@@ -249,6 +244,8 @@ func buildSingBoxVLESSOutbound(srv *VLESSServer) (map[string]any, error) {
 			"type":         "grpc",
 			"service_name": srv.Path,
 		}
+	case "xhttp":
+		out["transport"] = buildSingBoxXHTTPTransport(srv)
 	case "h2", "http":
 		t := map[string]any{"type": "http"}
 		if srv.Host != "" {
@@ -276,6 +273,197 @@ func buildSingBoxVLESSOutbound(srv *VLESSServer) (map[string]any, error) {
 	}
 
 	return out, nil
+}
+
+func buildSingBoxXHTTPTransport(srv *VLESSServer) map[string]any {
+	transport := map[string]any{
+		"type":            "xhttp",
+		"mode":            orDefault(srv.Mode, "auto"),
+		"x_padding_bytes": orDefault(srv.XPadding, "100-1000"),
+	}
+
+	// Providers commonly put extended XHTTP fields in the share-link `extra`
+	// object. Keep a strict allowlist so unrelated Xray-only keys cannot make
+	// the embedded sing-box configuration invalid.
+	var extra map[string]any
+	if len(srv.Extra) > 0 && json.Unmarshal(srv.Extra, &extra) == nil {
+		aliases := map[string]string{
+			"mode": "mode", "host": "host", "path": "path", "headers": "headers",
+			"domainStrategy": "domain_strategy", "domain_strategy": "domain_strategy",
+			"xPaddingBytes": "x_padding_bytes", "x_padding_bytes": "x_padding_bytes",
+			"noGRPCHeader": "no_grpc_header", "no_grpc_header": "no_grpc_header",
+			"noSSEHeader": "no_sse_header", "no_sse_header": "no_sse_header",
+			"scMaxEachPostBytes": "sc_max_each_post_bytes", "sc_max_each_post_bytes": "sc_max_each_post_bytes",
+			"scMinPostsIntervalMs": "sc_min_posts_interval_ms", "sc_min_posts_interval_ms": "sc_min_posts_interval_ms",
+			"scMaxBufferedPosts": "sc_max_buffered_posts", "sc_max_buffered_posts": "sc_max_buffered_posts",
+			"scStreamUpServerSecs": "sc_stream_up_server_secs", "sc_stream_up_server_secs": "sc_stream_up_server_secs",
+			"serverMaxHeaderBytes": "server_max_header_bytes", "server_max_header_bytes": "server_max_header_bytes",
+			"trustedXForwardedFor": "trusted_x_forwarded_for", "trusted_x_forwarded_for": "trusted_x_forwarded_for",
+			"xmux": "xmux", "xPaddingObfsMode": "x_padding_obfs_mode", "x_padding_obfs_mode": "x_padding_obfs_mode",
+			"xPaddingKey": "x_padding_key", "x_padding_key": "x_padding_key",
+			"xPaddingHeader": "x_padding_header", "x_padding_header": "x_padding_header",
+			"xPaddingPlacement": "x_padding_placement", "x_padding_placement": "x_padding_placement",
+			"xPaddingMethod": "x_padding_method", "x_padding_method": "x_padding_method",
+			"uplinkHTTPMethod": "uplink_http_method", "uplink_http_method": "uplink_http_method",
+			"sessionPlacement": "session_placement", "session_placement": "session_placement",
+			"sessionIDPlacement": "session_placement", "sessionIdPlacement": "session_placement",
+			"sessionKey": "session_key", "session_key": "session_key",
+			"sessionIDKey": "session_key", "sessionIdKey": "session_key",
+			"seqPlacement": "seq_placement", "seq_placement": "seq_placement",
+			"seqKey": "seq_key", "seq_key": "seq_key",
+			"uplinkDataPlacement": "uplink_data_placement", "uplink_data_placement": "uplink_data_placement",
+			"uplinkDataKey": "uplink_data_key", "uplink_data_key": "uplink_data_key",
+			"uplinkChunkSize": "uplink_chunk_size", "uplink_chunk_size": "uplink_chunk_size",
+			"sessionIDTable": "session_id_table", "sessionIdTable": "session_id_table", "session_id_table": "session_id_table",
+			"sessionIDLength": "session_id_length", "sessionIdLength": "session_id_length", "session_id_length": "session_id_length",
+			"congestionController": "congestion_controller", "congestion_controller": "congestion_controller",
+			"cwnd": "cwnd", "downloadSettings": "download", "download": "download",
+		}
+		for source, target := range aliases {
+			if value, ok := extra[source]; ok && value != nil {
+				transport[target] = normalizeXHTTPValue(value)
+			}
+		}
+	}
+
+	// Dedicated fields are authoritative because explicit share-link query
+	// parameters override values inside `extra`.
+	setString := func(key, value string) {
+		if value != "" {
+			transport[key] = value
+		}
+	}
+	setString("mode", srv.Mode)
+	setString("host", srv.Host)
+	setString("path", srv.Path)
+	setString("x_padding_bytes", srv.XPadding)
+	setString("session_placement", srv.SessionPlacement)
+	setString("session_key", srv.SessionKey)
+	setString("seq_placement", srv.SeqPlacement)
+	setString("seq_key", srv.SeqKey)
+	setString("uplink_http_method", srv.UplinkHTTPMethod)
+	setString("uplink_data_placement", srv.UplinkDataPlacement)
+	setString("uplink_data_key", srv.UplinkDataKey)
+	setString("x_padding_key", srv.XPaddingKey)
+	setString("x_padding_header", srv.XPaddingHeader)
+	setString("x_padding_placement", srv.XPaddingPlacement)
+	setString("x_padding_method", srv.XPaddingMethod)
+	if len(srv.XHTTPHeaders) > 0 {
+		transport["headers"] = srv.XHTTPHeaders
+	}
+	if srv.NoSSEHeader {
+		transport["no_sse_header"] = true
+	}
+	if srv.NoGRPCHeader {
+		transport["no_grpc_header"] = true
+	}
+	if srv.XPaddingObfsMode {
+		transport["x_padding_obfs_mode"] = true
+	}
+	if srv.ScMaxBufferedPosts != 0 {
+		transport["sc_max_buffered_posts"] = srv.ScMaxBufferedPosts
+	}
+	if len(srv.Xmux) > 0 {
+		var xmux any
+		if json.Unmarshal(srv.Xmux, &xmux) == nil {
+			transport["xmux"] = xmux
+		}
+	}
+	if len(srv.DownloadSettings) > 0 {
+		var download any
+		if json.Unmarshal(srv.DownloadSettings, &download) == nil {
+			transport["download"] = normalizeXHTTPValue(download)
+		}
+	}
+	ensureXHTTPPadding(transport)
+	return transport
+}
+
+func ensureXHTTPPadding(options map[string]any) {
+	padding, exists := options["x_padding_bytes"]
+	invalid := !exists || padding == nil
+	if value, ok := padding.(string); ok {
+		invalid = strings.TrimSpace(value) == "" || strings.TrimSpace(value) == "0"
+	}
+	if value, ok := padding.(float64); ok {
+		invalid = value <= 0
+	}
+	if value, ok := padding.(int); ok {
+		invalid = value <= 0
+	}
+	if invalid {
+		options["x_padding_bytes"] = "100-1000"
+	}
+	// Xray subscriptions use zero to mean "use the implementation default".
+	// Extended sing-box represents this option as a pointer and rejects an
+	// explicitly supplied zero, while an omitted value correctly selects its
+	// 1 MB default.
+	if isDisabledXHTTPRange(options["sc_max_each_post_bytes"]) {
+		delete(options, "sc_max_each_post_bytes")
+	}
+	if download, ok := options["download"].(map[string]any); ok {
+		ensureXHTTPPadding(download)
+	}
+}
+
+func isDisabledXHTTPRange(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		value := strings.TrimSpace(typed)
+		return value == "" || value == "0" || value == "0-0"
+	case float64:
+		return typed <= 0
+	case float32:
+		return typed <= 0
+	case int:
+		return typed <= 0
+	case int32:
+		return typed <= 0
+	case int64:
+		return typed <= 0
+	case json.Number:
+		number, err := typed.Float64()
+		return err == nil && number <= 0
+	default:
+		return false
+	}
+}
+
+func normalizeXHTTPValue(value any) any {
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	aliases := map[string]string{
+		"domainStrategy": "domain_strategy", "xPaddingBytes": "x_padding_bytes",
+		"noGRPCHeader": "no_grpc_header", "noSSEHeader": "no_sse_header",
+		"scMaxEachPostBytes": "sc_max_each_post_bytes", "scMinPostsIntervalMs": "sc_min_posts_interval_ms",
+		"scMaxBufferedPosts": "sc_max_buffered_posts", "scStreamUpServerSecs": "sc_stream_up_server_secs",
+		"serverMaxHeaderBytes": "server_max_header_bytes", "trustedXForwardedFor": "trusted_x_forwarded_for",
+		"xPaddingObfsMode": "x_padding_obfs_mode", "xPaddingKey": "x_padding_key",
+		"xPaddingHeader": "x_padding_header", "xPaddingPlacement": "x_padding_placement",
+		"xPaddingMethod": "x_padding_method", "uplinkHTTPMethod": "uplink_http_method",
+		"sessionPlacement": "session_placement", "sessionIDPlacement": "session_placement", "sessionIdPlacement": "session_placement",
+		"sessionKey": "session_key", "sessionIDKey": "session_key", "sessionIdKey": "session_key",
+		"seqPlacement": "seq_placement", "seqKey": "seq_key",
+		"uplinkDataPlacement": "uplink_data_placement", "uplinkDataKey": "uplink_data_key",
+		"uplinkChunkSize": "uplink_chunk_size", "sessionIDTable": "session_id_table", "sessionIdTable": "session_id_table",
+		"sessionIDLength": "session_id_length", "sessionIdLength": "session_id_length", "congestionController": "congestion_controller",
+		"maxConcurrency": "max_concurrency", "maxConnections": "max_connections",
+		"cMaxReuseTimes": "c_max_reuse_times", "hMaxRequestTimes": "h_max_request_times",
+		"hMaxReusableSecs": "h_max_reusable_secs", "hKeepAlivePeriod": "h_keep_alive_period",
+		"downloadSettings": "download", "serverName": "server_name", "serverPort": "server_port",
+	}
+	normalized := make(map[string]any, len(obj))
+	for key, nested := range obj {
+		if alias := aliases[key]; alias != "" {
+			key = alias
+		}
+		normalized[key] = normalizeXHTTPValue(nested)
+	}
+	return normalized
 }
 
 func orDefault(s, def string) string {

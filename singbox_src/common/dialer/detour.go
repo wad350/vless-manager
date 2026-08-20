@@ -52,14 +52,6 @@ func (d *DetourDialer) init() {
 		d.initErr = E.New("outbound detour not found: ", d.detour)
 		return
 	}
-	if !d.legacyDNSDialer {
-		if directDialer, isDirect := dialer.(DirectDialer); isDirect {
-			if directDialer.IsEmpty() {
-				d.initErr = E.New("detour to an empty direct outbound makes no sense")
-				return
-			}
-		}
-	}
 	d.dialer = dialer
 }
 

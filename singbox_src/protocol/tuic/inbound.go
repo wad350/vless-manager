@@ -168,3 +168,13 @@ func (h *Inbound) Close() error {
 		common.PtrOrNil(h.server),
 	)
 }
+
+func (h *Inbound) UpdateUsers(users []option.TUICUser) {
+	h.server.UpdateUsers(common.MapIndexed(users, func(index int, _ option.TUICUser) int {
+		return index
+	}), common.Map(users, func(it option.TUICUser) [16]byte {
+		return [16]byte(uuid.Must(uuid.FromString(it.UUID)).Bytes())
+	}), common.Map(users, func(it option.TUICUser) string {
+		return it.Password
+	}))
+}

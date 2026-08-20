@@ -188,7 +188,7 @@ func TestPreserveSubscriptionDisplayName(t *testing.T) {
 	}
 }
 
-func TestFetchSubscriptionExcludesUnsupportedTransports(t *testing.T) {
+func TestFetchSubscriptionKeepsExtendedTransports(t *testing.T) {
 	body := strings.Join([]string{
 		"vless://00000000-0000-0000-0000-000000000001@example.com:443?type=xhttp&security=tls#xhttp",
 		"vless://00000000-0000-0000-0000-000000000002@example.com:443?type=ws&security=tls#supported",
@@ -206,13 +206,13 @@ func TestFetchSubscriptionExcludesUnsupportedTransports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sub.Servers) != 2 || sub.Servers[0].Network != "ws" || sub.Servers[1].Network != "tcp" {
-		t.Fatalf("servers = %#v, want websocket and normalized raw/TCP", sub.Servers)
+	if len(sub.Servers) != 3 || sub.Servers[0].Network != "xhttp" || sub.Servers[1].Network != "ws" || sub.Servers[2].Network != "tcp" {
+		t.Fatalf("servers = %#v, want XHTTP, websocket and normalized raw/TCP", sub.Servers)
 	}
-	if sub.ExcludedServers != 2 {
-		t.Fatalf("excluded = %d, want 2", sub.ExcludedServers)
+	if sub.ExcludedServers != 1 {
+		t.Fatalf("excluded = %d, want 1", sub.ExcludedServers)
 	}
-	if sub.ExcludedTransports["xhttp"] != 1 || sub.ExcludedTransports["mystery"] != 1 {
+	if sub.ExcludedTransports["xhttp"] != 0 || sub.ExcludedTransports["mystery"] != 1 {
 		t.Fatalf("excluded transports = %#v", sub.ExcludedTransports)
 	}
 }
@@ -261,7 +261,7 @@ func TestFetchSubscriptionParsesXrayJSONArray(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sub.Servers) != 1 || sub.ExcludedServers != 1 {
+	if len(sub.Servers) != 2 || sub.ExcludedServers != 0 {
 		t.Fatalf("servers=%d excluded=%d", len(sub.Servers), sub.ExcludedServers)
 	}
 	server := sub.Servers[0]
@@ -289,28 +289,28 @@ func TestFetchSubscriptionPreservesXrayAutoProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sub.Servers) != 1 || sub.Servers[0].Name != "Auto 22" || len(sub.Servers[0].Members) != 2 {
+	if len(sub.Servers) != 1 || sub.Servers[0].Name != "Auto 22" || len(sub.Servers[0].Members) != 3 {
 		t.Fatalf("auto profile not preserved: %#v", sub.Servers)
 	}
-	if sub.ExcludedTransports["xhttp"] != 1 {
+	if sub.ExcludedTransports["xhttp"] != 0 {
 		t.Fatalf("excluded transports = %#v", sub.ExcludedTransports)
 	}
 }
 
-func TestPruneUnsupportedServersRemovesXHTTP(t *testing.T) {
+func TestPruneUnsupportedServersKeepsXHTTP(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Servers = []VLESSServer{
 		{ID: "xhttp", Network: "xhttp"},
 		{ID: "mystery", Network: "mystery"},
 	}
 	cfg.ActiveServer = "xhttp"
-	if removed := pruneUnsupportedServers(cfg); removed != 2 {
-		t.Fatalf("removed = %d, want 2", removed)
+	if removed := pruneUnsupportedServers(cfg); removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
 	}
-	if cfg.ActiveServer != "" {
-		t.Fatalf("active server = %q, want empty", cfg.ActiveServer)
+	if cfg.ActiveServer != "xhttp" {
+		t.Fatalf("active server = %q, want xhttp", cfg.ActiveServer)
 	}
-	if len(cfg.Servers) != 0 {
+	if len(cfg.Servers) != 1 || cfg.Servers[0].Network != "xhttp" {
 		t.Fatalf("servers = %#v", cfg.Servers)
 	}
 }

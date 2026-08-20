@@ -13,7 +13,7 @@ VLESS Manager — менеджер прозрачного VPN для Keenetic с
 ## Возможности
 
 - прозрачный TUN-туннель для роутера и клиентов LAN;
-- встроенный официальный sing-box без отдельного процесса;
+- встроенный sing-box extended без отдельного процесса;
 - VLESS Reality/TLS с транспортами TCP, WebSocket, gRPC, HTTP/H2,
   HTTP Upgrade и QUIC;
 - несколько подписок, приоритеты, отключение подписок и отдельных серверов;
@@ -26,8 +26,8 @@ VLESS Manager — менеджер прозрачного VPN для Keenetic с
 - структурированный журнал manager и sing-box;
 - необязательная авторизация по учётной записи Keenetic без хранения пароля;
 - проверка и установка новых версий из GitHub Releases через WebUI;
-- автономный IPK: `iptables` включён в пакет для установки без доступа к
-  репозиторию Entware.
+- автономный MIPS IPK: `iptables` включён в пакет для установки без доступа к
+  репозиторию Entware; ARM64 использует `iptables` установленного Entware.
 
 Подробное описание интерфейса, логики и диагностики:
 **[Руководство пользователя](docs/USER_GUIDE.md)**.
@@ -35,14 +35,13 @@ VLESS Manager — менеджер прозрачного VPN для Keenetic с
 ## Требования
 
 - Keenetic OS с установленным Entware;
-- архитектура `mipsel-3.4` (проверенная платформа: MT7621);
+- Entware `mipsel-3.4` (MT7621) или `aarch64-3.10` (ARM64);
 - интерфейс LAN `br0`;
-- Go `1.24.7` для сборки;
+- Go `1.26.4` для сборки;
 - `sshpass`, если используется автоматическая установка из Makefile.
 
-Проект настроен под конкретную схему Keenetic/Entware. Установка на другую
-архитектуру или OpenWrt требует проверки имён интерфейсов и правил policy
-routing.
+Проект настроен под Keenetic/Entware. Установка на другую архитектуру или
+OpenWrt требует проверки имён интерфейсов и правил policy routing.
 
 ## Сборка
 
@@ -51,7 +50,7 @@ make ipk
 ```
 
 Готовый пакет появится в `build/`. В бинарник встраиваются WebUI и sing-box
-`v1.13.15`; отдельный пакет sing-box не требуется.
+`v1.13.18-extended-2.6.5`; отдельный пакет sing-box не требуется.
 
 ## Установка
 
@@ -75,7 +74,7 @@ curl -fsSL https://raw.githubusercontent.com/wad350/vless-manager/main/install.s
 При установке скачанного IPK вручную:
 
 ```sh
-opkg install /tmp/vless-manager_VERSION_mipsel-3.4.ipk
+opkg install /tmp/vless-manager_VERSION_ARCH.ipk
 ```
 
 Для сборки и установки из исходного дерева пароль роутера не хранится в
@@ -110,8 +109,8 @@ make install-ipk \
 ## Разработка
 
 ```sh
-GOCACHE="$PWD/.gocache" GOTOOLCHAIN=go1.24.7 \
-  go test -tags with_utls ./cmd/vless-manager
+GOCACHE="$PWD/.gocache" GOTOOLCHAIN=go1.26.4 \
+  go test -tags with_utls ./...
 ```
 
 Основные каталоги:
@@ -121,9 +120,9 @@ GOCACHE="$PWD/.gocache" GOTOOLCHAIN=go1.24.7 \
 - `packaging/` — сборка пакетов Entware/OpenWrt и init-скрипты;
 - `docs/` — пользовательская документация.
 
-Push и pull request запускают тесты и сборку MIPSLE-бинарника. Тег формата
+Push и pull request запускают тесты и сборку IPK для MIPSLE и ARM64. Тег формата
 `vX.Y.Z`, совпадающий с `VERSION` в `Makefile`, создаёт GitHub Release с
-IPK-пакетом и SHA-256.
+двумя IPK-пакетами и SHA-256.
 
 ## Обновление
 
@@ -141,15 +140,14 @@ WAN-соединение.
 `opkg install --force-reinstall`; результат установки и запуска записывается в
 отдельный журнал обновления.
 
-## Ограничения
+## Особенности маршрутизации
 
-- XHTTP намеренно не поддерживается: используется официальный sing-box, а
-  XHTTP-узлы исключаются при разборе подписки.
-- TUN MTU зафиксирован на `1500`.
-- процесс ограничен тремя потоками Go и мягким лимитом памяти 50 MiB, чтобы
-  оставить ресурсы Keenetic OS;
-- UDP/443 блокируется в таблице маршрутизации, чтобы клиенты откатывались с
-  QUIC на TCP и не создавали чрезмерную нагрузку на роутер.
+- используется embedded sing-box extended с поддержкой XHTTP;
+- TUN MTU зафиксирован на `1500`;
+- весь внешний TCP и UDP, включая публичный DNS и QUIC, направляется через
+  VLESS; для UDP явно используется XUDP;
+- private/LAN сети, IP активного VLESS-сервера и настроенные Bypass-домены
+  остаются вне туннеля.
 
 ## Безопасность
 

@@ -53,9 +53,9 @@ func (r RuleAction) MarshalJSON() ([]byte, error) {
 		return nil, E.New("unknown rule action: " + r.Action)
 	}
 	if v == nil {
-		return badjson.MarshallObjects((_RuleAction)(r))
+		return badjson.MarshallObjects(_RuleAction(r))
 	}
-	return badjson.MarshallObjects((_RuleAction)(r), v)
+	return badjson.MarshallObjects(_RuleAction(r), v)
 }
 
 func (r *RuleAction) UnmarshalJSON(data []byte) error {
@@ -124,7 +124,7 @@ func (r DNSRuleAction) MarshalJSON() ([]byte, error) {
 	default:
 		return nil, E.New("unknown DNS rule action: " + r.Action)
 	}
-	return badjson.MarshallObjects((_DNSRuleAction)(r), v)
+	return badjson.MarshallObjects(_DNSRuleAction(r), v)
 }
 
 func (r *DNSRuleAction) UnmarshalJSONContext(ctx context.Context, data []byte) error {
@@ -157,6 +157,8 @@ type RouteActionOptions struct {
 type RawRouteOptionsActionOptions struct {
 	OverrideAddress string `json:"override_address,omitempty"`
 	OverridePort    uint16 `json:"override_port,omitempty"`
+
+	OverrideGateway string `json:"override_gateway,omitempty"`
 
 	NetworkStrategy *NetworkStrategy `json:"network_strategy,omitempty"`
 	FallbackDelay   uint32           `json:"fallback_delay,omitempty"`
@@ -279,7 +281,7 @@ func (r RejectActionOptions) MarshalJSON() ([]byte, error) {
 	case C.RuleActionRejectMethodDefault:
 		r.Method = ""
 	}
-	return json.Marshal((_RejectActionOptions)(r))
+	return json.Marshal(_RejectActionOptions(r))
 }
 
 func (r *RejectActionOptions) UnmarshalJSON(bytes []byte) error {

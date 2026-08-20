@@ -38,6 +38,9 @@ func NewRouterWithOptions(router adapter.ConnectionRouterEx, logger logger.Conte
 		}
 	}
 	service, err := mux.NewService(mux.ServiceOptions{
+		NewConnectionContext: func(ctx context.Context, conn net.Conn) context.Context {
+			return log.ContextWithNewMuxID(ctx)
+		},
 		NewStreamContext: func(ctx context.Context, conn net.Conn) context.Context {
 			return log.ContextWithNewID(ctx)
 		},

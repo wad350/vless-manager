@@ -1,0 +1,156 @@
+syntax = "proto3";
+
+option go_package = "github.com/sagernet/sing-box/service/node_manager_api/manager";
+
+package node_manager_api.v1;
+
+service Manager {
+  rpc AddNode (Node) returns (stream NodeData);
+  rpc AcquireLock(AcquireLockRequest) returns (LockData);
+  rpc RefreshLock(LockData) returns (Empty);
+  rpc ReleaseLock(LockData) returns (Empty);
+  rpc AddTrafficUsage(TrafficUsageRequest) returns (TrafficUsageReply);
+}
+
+message Node {
+  string uuid = 1;
+}
+
+enum OpType {
+  updateUsers = 0;
+  updateUser  = 1;
+  deleteUser  = 2;
+
+  updateBandwidthLimiters = 3;
+  updateBandwidthLimiter  = 4;
+  deleteBandwidthLimiter  = 5;
+
+  updateConnectionLimiters = 6;
+  updateConnectionLimiter  = 7;
+  deleteConnectionLimiter  = 8;
+
+  updateTrafficLimiters = 9;
+  updateTrafficLimiter  = 10;
+  deleteTrafficLimiter  = 11;
+
+  updateRateLimiters = 12;
+  updateRateLimiter  = 13;
+  deleteRateLimiter  = 14;
+}
+
+message User {
+  int32  id = 1;
+  string username = 2;
+  string inbound = 3;
+  string type = 4;
+  string uuid = 5;
+  string password = 6;
+  string secret = 7;
+  string flow = 8;
+  int32  alter_id = 9;
+  repeated string authorized_keys = 10;
+}
+
+message UserList {
+  repeated User values = 1;
+}
+
+message BandwidthLimiter {
+  int32  id = 1;
+  string username = 2;
+  string outbound = 3;
+  string strategy = 4;
+  string connection_type = 5;
+  string mode = 6;
+  repeated string flow_keys = 7;
+  string speed = 8;
+  uint64 raw_speed = 9;
+}
+
+message BandwidthLimiterList {
+  repeated BandwidthLimiter values = 1;
+}
+
+message ConnectionLimiter {
+  int32  id = 1;
+  string username = 2;
+  string outbound = 3;
+  string strategy = 4;
+  string connection_type = 5;
+  string lock_type = 6;
+  uint32 count = 7;
+}
+
+message ConnectionLimiterList {
+  repeated ConnectionLimiter values = 1;
+}
+
+message TrafficLimiter {
+  int32  id = 1;
+  string username = 2;
+  string outbound = 3;
+  string strategy = 4;
+  string mode = 5;
+  uint64 raw_used = 6;
+  string quota = 7;
+  uint64 raw_quota = 8;
+}
+
+message TrafficLimiterList {
+  repeated TrafficLimiter values = 1;
+}
+
+message RateLimiter {
+  int32  id = 1;
+  string username = 2;
+  string outbound = 3;
+  string strategy = 4;
+  string connection_type = 5;
+  uint32 count = 6;
+  string interval = 7;
+}
+
+message RateLimiterList {
+  repeated RateLimiter values = 1;
+}
+
+message NodeData {
+
+  OpType op = 1;
+
+  oneof data {
+    UserList users = 2;
+    User user = 3;
+    BandwidthLimiterList bandwidth_limiters = 4;
+    BandwidthLimiter bandwidth_limiter = 5;
+    ConnectionLimiterList connection_limiters = 6;
+    ConnectionLimiter connection_limiter = 7;
+    TrafficLimiterList traffic_limiters = 8;
+    TrafficLimiter traffic_limiter = 9;
+    RateLimiterList rate_limiters = 10;
+    RateLimiter rate_limiter = 11;
+  }
+
+}
+
+message AcquireLockRequest {
+  int32 limiter_id = 1;
+  string id = 2;
+}
+
+message LockData {
+  int32 limiter_id = 1;
+  string id = 2;
+  string handleId = 3;
+}
+
+message TrafficUsageRequest {
+  int32 limiter_id = 1;
+  uint64 n = 2;
+}
+
+message TrafficUsageReply {
+  uint64 remaining = 1;
+}
+
+message Empty {}

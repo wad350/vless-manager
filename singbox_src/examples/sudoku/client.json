@@ -1,0 +1,31 @@
+{
+  "inbounds": [
+    {
+      "type": "mixed",
+      "listen": "127.0.0.1",
+      "listen_port": 1080
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "sudoku",
+      "server": "your-server.com",
+      "server_port": 443,
+      "key": "your-secret-key"
+      // "aead_method": "chacha20-poly1305", // chacha20-poly1305 | aes-128-gcm | none
+      // "table_type": "prefer_ascii",       // prefer_ascii | prefer_entropy | up_ascii_down_entropy | up_entropy_down_ascii
+      // "padding_min": 10,                  // 0-100
+      // "padding_max": 30,                  // 0-100, >= padding_min
+      // "enable_pure_downlink": true,       // true | false
+      // "custom_table": "xpxvvpvv",         // 8 chars: 2x, 2p, 4v
+      // "custom_tables": ["xpxvvpvv", "vxpvxvvp"],
+      // "http_mask": {
+      //   "enabled": true,                  // true | false
+      //   "mode": "stream",                 // legacy | stream | poll | auto | ws
+      //   "host": "cdn.example.com",        // optional, Host header / SNI override
+      //   "path_root": "secret",            // optional, URL path prefix (single segment)
+      //   "multiplex": "auto"               // off | auto | on
+      // }
+    }
+  ]
+}

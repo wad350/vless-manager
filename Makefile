@@ -1,24 +1,22 @@
 # ── Project metadata ──────────────────────────────────────────────────────────
-VERSION      := 1.16.3
-ARCH         := mipsel-3.4
+VERSION      := 1.16.5
+ARCH         ?= mipsel-3.4
 BUILD_DATE   := $(shell date -u +%Y-%m-%d)
 
 # ── Embedded sing-box ─────────────────────────────────────────────────────────
-# Official sing-box is embedded as a Go library (singbox_src/).
-# No separate binary — saves ~15 MB RSS on the 124 MB MT7621 router.
-SINGBOX_TAG  := v1.13.15
+# sing-box extended is embedded as a Go library (singbox_src/), including
+# XHTTP transport support without a separate daemon.
+SINGBOX_TAG  := v1.13.18-extended-2.6.5
 BUILD_TAGS   := with_utls
 UPDATE_REPOSITORY ?= wad350/vless-manager
 
 # ── Go cross-compile target (Keenetic MT7621 = mipsle softfloat) ──────────────
-GOOS         := linux
-GOARCH       := mipsle
-GOMIPS       := softfloat
-CGO          := 0
-# Pin the toolchain used by the official sing-box source.
-# Go 1.25+ on softfloat MIPS reserves >500 MB virtual memory even at idle
-# and triggered OOM-killer on 124 MB routers in earlier tests.
-GOTOOLCHAIN  := go1.24.7
+GOOS         ?= linux
+GOARCH       ?= mipsle
+GOMIPS       ?= softfloat
+CGO          ?= 0
+# Pin the toolchain required by the bundled extended source.
+GOTOOLCHAIN  := go1.26.4
 export GOTOOLCHAIN
 LDFLAGS      := -s -w \
                 -X main.Version=$(VERSION) \
@@ -45,7 +43,7 @@ manager:
 	GOOS=$(GOOS) GOARCH=$(GOARCH) GOMIPS=$(GOMIPS) CGO_ENABLED=$(CGO) \
 		go build -tags "$(BUILD_TAGS)" -trimpath -ldflags="$(LDFLAGS)" \
 		-o $(BUILD_DIR)/vless-manager ./cmd/vless-manager/
-	@echo "Built $(BUILD_DIR)/vless-manager $(VERSION) ($(shell du -h $(BUILD_DIR)/vless-manager | cut -f1))"
+	@echo "Built $(BUILD_DIR)/vless-manager $(VERSION) ($$(du -h $(BUILD_DIR)/vless-manager | cut -f1))"
 	@echo "NOTE: UPX segfaults on MT7621 — leaving uncompressed."
 
 # ── IPK ───────────────────────────────────────────────────────────────────────

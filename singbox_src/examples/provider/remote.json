@@ -1,0 +1,98 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen_port": 7897
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    // The "urltest" group below uses every outbound exposed by every
+    // registered provider thanks to "use_all_providers": true.
+    // The fastest member is selected based on the URL test result.
+    {
+      "type": "urltest",
+      "tag": "auto",
+      "outbounds": [
+        "direct"
+      ],
+      "use_all_providers": true,
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "10m",
+      "tolerance": 50,
+      "interrupt_exist_connections": true
+    }
+  ],
+  "providers": [
+    {
+      "type": "remote",
+      "tag": "my-remote",
+      // Subscription URL. The response body can be any auto-detected
+      // format: sing-box JSON, Clash YAML, SIP008, base64-encoded
+      // shareable links, or plain link list.
+      "url": "https://example.com/subscription.txt",
+      "user_agent": "sing-box",
+      // Custom HTTP headers sent with each subscription request.
+      // Some subscription panels (e.g. Remnawave with incy/happ
+      // integration) require device-identification headers to
+      // return the real server list instead of a dummy config.
+      //
+      // !!! DO NOT COPY THE VALUE BELOW !!!
+      // x-hwid must be generated per-device. A random UUID will
+      // be rejected by the panel. Generate yours on Linux:
+      //
+      //   python3 -c "import hashlib,socket,getpass;m=open('/etc/machine-id').read().strip();d=hashlib.sha256(f'{m}|{socket.gethostname()}|Linux|amd64|{getpass.getuser()}'.encode()).hexdigest();h=hashlib.sha256(('incy_hwid_'+d).encode()).hexdigest();print(f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}'.upper())"
+      //
+      // Algorithm: SHA256("incy_hwid_" + SHA256(deviceId))
+      // Linux deviceId: "machineId|hostname|Linux|amd64|user"
+      // Android deviceId: "androidId|manufacturer|model|brand|device|product|board|hardware"
+      // Ref: https://github.com/INCY-DEV/incy-docs/blob/main/ru/dev-docs/hwid.md
+      "headers": {
+        "x-hwid": ["REPLACE_WITH_GENERATED_HWID"],
+        // Platform: linux, android, ios, windows, macos
+        "x-device-os": ["linux"],
+        // OS version — on Linux: uname -r
+        "x-ver-os": ["6.12.0-arch1-1"],
+        // Device model — on Linux: uname -m
+        "x-device-model": ["x86_64"]
+      },
+      // Fetch the subscription through this outbound instead of the
+      // default route (useful when the subscription host is blocked).
+      "download_detour": "direct",
+      // Refresh interval. Minimum is 1 minute; default is 24h.
+      "update_interval": "12h",
+      // Optional regex filters applied after parsing the subscription.
+      // "exclude" wins over "include" when both match.
+      "exclude": "(?i)expire|流量|官网",
+      "include": "(?i)hk|jp|sg|us",
+      // Remove emoji flags from proxy names.
+      "remove_emojis": true,
+      "health_check": {
+        "enabled": true,
+        "url": "https://www.gstatic.com/generate_204",
+        "interval": "5m",
+        "timeout": "5s"
+      }
+    }
+  ],
+  "route": {
+    "final": "auto",
+    "default_domain_resolver": "default",
+    "auto_detect_interface": true
+  }
+}

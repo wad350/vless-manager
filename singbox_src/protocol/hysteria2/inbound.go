@@ -211,3 +211,11 @@ func (h *Inbound) Close() error {
 		common.PtrOrNil(h.service),
 	)
 }
+
+func (h *Inbound) UpdateUsers(users []option.Hysteria2User) {
+	h.service.UpdateUsers(common.MapIndexed(users, func(index int, _ option.Hysteria2User) int {
+		return index
+	}), common.Map(users, func(it option.Hysteria2User) string {
+		return it.Password
+	}))
+}

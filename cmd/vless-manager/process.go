@@ -239,8 +239,8 @@ type outboundTrafficSnapshot struct {
 }
 
 // ProcessManager embeds sing-box as a library instead of running it as a
-// separate process. This saves ~15 MB of RSS by sharing the Go runtime
-// (critical on the 124 MB MT7621 router).
+// separate process. This avoids a second runtime and keeps control, traffic
+// accounting and network-engine logs in the same process.
 type ProcessManager struct {
 	mu         sync.Mutex
 	box        boxHandle // interface so non-with_utls builds compile

@@ -3,7 +3,7 @@ set -eu
 
 REPOSITORY="${VLESS_MANAGER_REPOSITORY:-wad350/vless-manager}"
 VERSION="${VLESS_MANAGER_VERSION:-}"
-ARCH="mipsel-3.4"
+ARCH="${VLESS_MANAGER_ARCH:-}"
 TMP_ROOT="${TMPDIR:-/tmp}"
 
 log() {
@@ -35,6 +35,14 @@ fetch() {
 command -v opkg >/dev/null 2>&1 || die "opkg не найден; сначала установите Entware"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum не найден"
 
+if [ -z "$ARCH" ]; then
+    case "$(uname -m 2>/dev/null || true)" in
+        mips|mipsel) ARCH="mipsel-3.4" ;;
+        aarch64|arm64) ARCH="aarch64-3.10" ;;
+        *) die "неподдерживаемая архитектура: $(uname -m 2>/dev/null || printf неизвестно)" ;;
+    esac
+fi
+
 if ! opkg print-architecture 2>/dev/null | awk '{ print $2 }' | grep -qx "$ARCH"; then
     die "пакет предназначен для Entware $ARCH"
 fi
@@ -61,7 +69,7 @@ release_url="https://github.com/$REPOSITORY/releases/download/v${VERSION}"
 package_file="$tmp_dir/$asset"
 checksum_file="$package_file.sha256"
 
-log "Скачиваю VLESS Manager $VERSION..."
+log "Скачиваю VLESS Manager $VERSION для $ARCH..."
 fetch "$release_url/$asset" "$package_file"
 fetch "$release_url/$asset.sha256" "$checksum_file"
 

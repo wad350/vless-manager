@@ -53,7 +53,7 @@ func (r RuleSet) MarshalJSON() ([]byte, error) {
 	default:
 		return nil, E.New("unknown rule-set type: " + r.Type)
 	}
-	return badjson.MarshallObjects((_RuleSet)(r), v)
+	return badjson.MarshallObjects(_RuleSet(r), v)
 }
 
 func (r *RuleSet) UnmarshalJSON(bytes []byte) error {
@@ -145,7 +145,7 @@ func (r HeadlessRule) MarshalJSON() ([]byte, error) {
 	default:
 		return nil, E.New("unknown rule type: " + r.Type)
 	}
-	return badjson.MarshallObjects((_HeadlessRule)(r), v)
+	return badjson.MarshallObjects(_HeadlessRule(r), v)
 }
 
 func (r *HeadlessRule) UnmarshalJSON(bytes []byte) error {
@@ -248,7 +248,7 @@ func (r PlainRuleSetCompat) MarshalJSON() ([]byte, error) {
 	default:
 		return nil, E.New("unknown rule-set version: ", r.Version)
 	}
-	return badjson.MarshallObjects((_PlainRuleSetCompat)(r), v)
+	return badjson.MarshallObjects(_PlainRuleSetCompat(r), v)
 }
 
 func (r *PlainRuleSetCompat) UnmarshalJSON(bytes []byte) error {

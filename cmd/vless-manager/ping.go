@@ -44,7 +44,7 @@ var supportedNetworks = map[string]bool{
 	"http":        true,
 	"httpupgrade": true,
 	"quic":        true,
-	"xhttp":       false,
+	"xhttp":       true,
 }
 
 func isSupportedServer(srv *VLESSServer) bool {
@@ -135,9 +135,8 @@ func pingHTTPStatusOK(status int) bool {
 //
 // `maxParallel` controls concurrency:
 //
-//	<= 1 → sequential (default; conservative on 124 MB MIPS routers)
-//	>= 2 → fan-out via a semaphore. Each parallel slot adds ~30 MB RSS so
-//	       only crank this up when you've measured the headroom.
+//	<= 1 → sequential
+//	>= 2 → fan-out via a semaphore with the exact configured concurrency
 //
 // onDone is invoked per server as its result lands; may be nil.
 func pingBatchViaSingBox(servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {

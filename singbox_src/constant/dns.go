@@ -28,6 +28,8 @@ const (
 	DNSTypeFakeIP      = "fakeip"
 	DNSTypeDHCP        = "dhcp"
 	DNSTypeTailscale   = "tailscale"
+	DNSTypeSDNS        = "sdns"
+	DNSTypeFallback    = "fallback"
 )
 
 const (

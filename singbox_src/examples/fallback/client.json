@@ -1,0 +1,61 @@
+{
+  "log": {
+    "level": "error"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen_port": 7897
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "vless",
+      "tag": "vless-1-out",
+      "server": "example1.com",
+      "server_port": 443,
+      "uuid": "9b65b7e1-04c8-4717-8f45-2aa61fd25937"
+    },
+    {
+      "type": "vless",
+      "tag": "vless-2-out",
+      "server": "example2.com",
+      "server_port": 443,
+      "uuid": "294fd6bc-4f89-43e7-9228-7900aba396af"
+    },
+    {
+      "type": "vless",
+      "tag": "vless-3-out",
+      "server": "example3.com",
+      "server_port": 443,
+      "uuid": "257f20d0-294a-4f07-9f2c-9efee9a37400"
+    },
+    {
+      "type": "fallback",
+      "tag": "fallback-out",
+      "outbounds": [
+        "vless-1-out",
+        "vless-2-out",
+        "vless-3-out"
+      ]
+    }
+  ],
+  "route": {
+    "final": "fallback-out",
+    "default_domain_resolver": "default",
+    "auto_detect_interface": true
+  }
+}

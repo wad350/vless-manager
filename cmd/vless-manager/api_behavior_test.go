@@ -62,28 +62,6 @@ func TestRunPingAllHandlesIncompatibleServer(t *testing.T) {
 	}
 }
 
-func TestEffectivePingParallelProtectsLowMemoryRouter(t *testing.T) {
-	tests := []struct {
-		requested int
-		memoryKB  int64
-		want      int
-		reason    string
-	}{
-		{0, 124 * 1024, 1, ""},
-		{1, 124 * 1024, 1, ""},
-		{2, 124 * 1024, 1, "memory_below_256mb"},
-		{2, 512 * 1024, 2, ""},
-		{2, 0, 2, ""},
-	}
-	for _, test := range tests {
-		got, reason := effectivePingParallel(test.requested, test.memoryKB)
-		if got != test.want || reason != test.reason {
-			t.Fatalf("requested=%d memory=%d got=%d/%q want=%d/%q",
-				test.requested, test.memoryKB, got, reason, test.want, test.reason)
-		}
-	}
-}
-
 func TestConfiguredAlternativeSelectionOrders(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.ActiveServer = "active"
