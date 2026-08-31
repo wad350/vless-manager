@@ -376,6 +376,32 @@ func (c *operationCoordinator) CancelActive() bool {
 	return true
 }
 
+func (c *operationCoordinator) CancelKind(kind string) bool {
+	c.mu.Lock()
+	if c.active != nil && c.active.req.Kind == kind && c.active.req.Cancellable && c.cancel != nil {
+		c.active.view.CancelRequested = true
+		c.active.view.State = "cancelling"
+		c.active.view.Message = "Останавливается"
+		c.active.view.UpdatedAt = time.Now()
+		c.cancel()
+		c.mu.Unlock()
+		return true
+	}
+	for i, op := range c.queue {
+		if op.req.Kind != kind || !op.req.Cancellable {
+			continue
+		}
+		c.queue = append(c.queue[:i], c.queue[i+1:]...)
+		c.finishQueuedLocked(op)
+		c.mu.Unlock()
+		op.done <- errOperationCancelled
+		c.signal()
+		return true
+	}
+	c.mu.Unlock()
+	return false
+}
+
 func (c *operationCoordinator) Snapshot() operationSnapshot {
 	load, high := operationSystemLoad()
 	c.mu.Lock()

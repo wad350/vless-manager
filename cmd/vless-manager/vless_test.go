@@ -252,6 +252,36 @@ func TestGeneratedTunMTUIsFixedAt1500(t *testing.T) {
 	}
 }
 
+func TestGeneratedConfigRoutesICMPDirectBeforeSniff(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Settings.BypassRouteRussia = false
+	data, err := generateSingBoxConfig(cfg, &VLESSServer{
+		Address: "example.com",
+		Port:    443,
+		UUID:    "00000000-0000-0000-0000-000000000001",
+		Network: "tcp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generated map[string]any
+	if err := json.Unmarshal(data, &generated); err != nil {
+		t.Fatal(err)
+	}
+	route := generated["route"].(map[string]any)
+	rules := route["rules"].([]any)
+	if len(rules) < 2 {
+		t.Fatalf("route rules = %#v, want ICMP and sniff rules", rules)
+	}
+	icmpRule := rules[0].(map[string]any)
+	if icmpRule["network"] != "icmp" || icmpRule["outbound"] != "direct" {
+		t.Fatalf("first route rule = %#v, want ICMP through direct", icmpRule)
+	}
+	if sniffRule := rules[1].(map[string]any); sniffRule["action"] != "sniff" {
+		t.Fatalf("second route rule = %#v, want sniff action", sniffRule)
+	}
+}
+
 func TestBuildSingBoxAutoProfile(t *testing.T) {
 	profile := &VLESSServer{Name: "Auto", Members: []VLESSServer{
 		{Address: "one.example", Port: 443, UUID: "00000000-0000-0000-0000-000000000301", Network: "tcp"},

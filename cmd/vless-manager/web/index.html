@@ -208,6 +208,33 @@
         </div>
       </section>
     </div>
+
+    <section class="status-section speedtest-section">
+      <div class="status-section-header compact">
+        <div>
+          <h2>Скорость туннеля</h2>
+          <p id="speedtest-subtitle">Последний замер через активный VLESS-сервер</p>
+        </div>
+        <div class="speedtest-actions">
+          <select id="speedtest-provider" aria-label="Сервис измерения скорости">
+            <option value="cloudflare">Cloudflare</option>
+            <option value="speedtest-ru">Speedtest.ru</option>
+          </select>
+          <button type="button" class="btn btn-ghost btn-sm" id="speedtest-cancel" hidden>Остановить</button>
+          <button type="button" class="btn btn-primary btn-sm" id="speedtest-start">Запустить тест</button>
+        </div>
+      </div>
+      <div class="speedtest-metrics">
+        <div><span>Задержка</span><b id="speedtest-latency">—</b><small id="speedtest-jitter">джиттер —</small></div>
+        <div><span>Скачивание</span><b id="speedtest-download">—</b><small id="speedtest-download-bytes">—</small></div>
+        <div><span>Отправка</span><b id="speedtest-upload">—</b><small id="speedtest-upload-bytes">—</small></div>
+      </div>
+      <div class="speedtest-progress" id="speedtest-progress" hidden>
+        <div><span id="speedtest-message">Подготовка</span><b id="speedtest-progress-value">0%</b></div>
+        <div class="speedtest-progress-track"><span id="speedtest-progress-fill"></span></div>
+      </div>
+      <div class="speedtest-verification" id="speedtest-verification" hidden></div>
+    </section>
   </div>
 
   <!-- ПОДПИСКИ -->

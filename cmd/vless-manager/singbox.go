@@ -25,8 +25,8 @@ const (
 // generateSingBoxConfig builds a sing-box config: TUN inbound (system stack)
 // + VLESS outbound. LAN traffic arrives at tun0 via iptables fwmark routing
 // set up by routing.go. The "system" stack processes packets entirely in
-// userspace (no gVisor), handles TCP/UDP NAT, and fakes ICMP echo replies
-// so LAN clients' pings appear to succeed.
+// userspace (no gVisor) and handles TCP/UDP NAT. VLESS cannot carry ICMP,
+// so ICMP is explicitly routed through the direct outbound below.
 //
 // TUN MTU is intentionally fixed at 1500. The physical LTE/WAN interface
 // negotiates its own MTU; this virtual interface carries client IP packets.
@@ -83,6 +83,11 @@ func generateSingBoxConfig(cfg *Config, srv *VLESSServer) ([]byte, error) {
 	}
 
 	rules := []map[string]any{
+		// VLESS supports TCP and UDP, but not ICMP. Route ping through the
+		// marked direct outbound instead of letting it fall through to proxy,
+		// which would emit a warning for every echo request and drop it.
+		// Keep this before sniff: ICMP has no application protocol to inspect.
+		{"network": "icmp", "outbound": "direct"},
 		// Sniff TLS SNI / HTTP Host so domain rules work without a DNS
 		// lookup. Cheap, no extra connections.
 		{"action": "sniff"},

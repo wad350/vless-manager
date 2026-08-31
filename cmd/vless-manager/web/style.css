@@ -709,6 +709,77 @@ header .badge {
   font-size: 10px;
 }
 .traffic-totals b { color: var(--text); font-weight: 500; }
+.speedtest-section { margin-top: 12px; }
+.speedtest-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.speedtest-actions select {
+  width: 126px;
+  min-height: 30px;
+  padding: 5px 24px 5px 8px;
+  font-size: 10px;
+}
+.speedtest-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--border);
+  background: var(--panel2);
+}
+.speedtest-metrics > div {
+  min-width: 0;
+  padding: 12px;
+  border-right: 1px solid var(--border);
+}
+.speedtest-metrics > div:last-child { border-right: 0; }
+.speedtest-metrics span,
+.speedtest-metrics b,
+.speedtest-metrics small { display: block; }
+.speedtest-metrics span { color: var(--text2); font-size: 9px; }
+.speedtest-metrics b {
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.speedtest-metrics small { margin-top: 3px; color: var(--text2); font-size: 9px; }
+.speedtest-progress { margin-top: 10px; }
+.speedtest-progress > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 5px;
+  color: var(--text2);
+  font-size: 10px;
+}
+.speedtest-progress-track {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--bg);
+}
+.speedtest-progress-track span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms linear;
+}
+.speedtest-verification {
+  margin-top: 9px;
+  padding-left: 9px;
+  border-left: 2px solid var(--text2);
+  color: var(--text2);
+  font-size: 10px;
+}
+.speedtest-verification.verified { border-color: var(--green); color: var(--green); }
+.speedtest-verification.warning { border-color: var(--yellow); color: var(--yellow); }
+.speedtest-verification.error { border-color: var(--red); color: var(--red); }
 .routing-facts {
   display: flex;
   flex-direction: column;
@@ -771,6 +842,13 @@ header .badge {
   .traffic-toolbar { align-items: stretch; flex-direction: column; }
   .traffic-mode-switch { width: 100%; }
   .traffic-rates { justify-content: space-between; }
+  .speedtest-section .status-section-header { align-items: stretch; }
+  .speedtest-actions { width: 100%; }
+  .speedtest-actions select { flex: 1; width: auto; }
+  .speedtest-actions .btn { flex: 1; }
+  .speedtest-metrics { grid-template-columns: 1fr; }
+  .speedtest-metrics > div { border-right: 0; border-bottom: 1px solid var(--border); }
+  .speedtest-metrics > div:last-child { border-bottom: 0; }
   .failover-switch { margin-left: 0; }
   .failover-verdict-row { flex-wrap: wrap; }
   .failover-checked { width: 100%; margin-left: 0; }

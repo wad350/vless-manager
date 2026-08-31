@@ -56,6 +56,7 @@ type apiServer struct {
 	updater    *appUpdater
 	auth       *authService
 	operations *operationCoordinator
+	speedTest  *speedTestService
 
 	pingMu       sync.Mutex
 	pingProgress PingProgress
@@ -87,6 +88,7 @@ func newAPIServer(pm *ProcessManager, cfg *Config, subs []*Subscription, cfgPath
 	}
 	s.failover = newFailoverController(s, cfg.AutoFailover, cfg.AutoTunnelFailover)
 	s.operations = newOperationCoordinator(pm)
+	s.speedTest = newSpeedTestService(s)
 	s.updater = newAppUpdater(s)
 	s.connectStartFn = s.startManagedVPN
 	s.health.SetSettingsSource(s.settingsSnapshot)
@@ -596,6 +598,7 @@ func (s *apiServer) routes() {
 	s.mux.HandleFunc("/api/parse-uri", s.handleParseURI)
 	// Traffic stats (tun0 rx/tx bytes since interface up)
 	s.mux.HandleFunc("/api/traffic", s.handleTraffic)
+	s.mux.HandleFunc("/api/speedtest", s.handleSpeedTest)
 	// Version info (manager + bundled sing-box)
 	s.mux.HandleFunc("/api/version", s.handleVersion)
 	// Application updates from signed-by-hash GitHub Release assets.
@@ -2231,17 +2234,20 @@ func (s *apiServer) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	tx, _ := readUint64File("/sys/class/net/" + iface + "/statistics/tx_bytes")
 	download, upload := trafficDirections(iface, rx, tx)
 	outbound, vpnRunning := s.pm.TrafficSnapshot()
+	routerDownload, routerUpload := s.speedTest.trafficSnapshot()
+	allDownload := addTrafficCounters(download, routerDownload)
+	allUpload := addTrafficCounters(upload, routerUpload)
 	writeJSON(w, map[string]any{
 		"interface":      iface,
-		"download_bytes": download,
-		"upload_bytes":   upload,
+		"download_bytes": allDownload,
+		"upload_bytes":   allUpload,
 		"rx_bytes":       rx,
 		"tx_bytes":       tx,
 		"vpn_running":    vpnRunning,
 		"modes": map[string]any{
 			"all": map[string]any{
-				"download_bytes": download,
-				"upload_bytes":   upload,
+				"download_bytes": allDownload,
+				"upload_bytes":   allUpload,
 				"available":      true,
 			},
 			"vpn": map[string]any{
@@ -2257,6 +2263,13 @@ func (s *apiServer) handleTraffic(w http.ResponseWriter, r *http.Request) {
 		},
 		"timestamp": time.Now().UnixMilli(),
 	})
+}
+
+func addTrafficCounters(base, extra uint64) uint64 {
+	if ^uint64(0)-base < extra {
+		return ^uint64(0)
+	}
+	return base + extra
 }
 
 func trafficDirections(iface string, rx, tx uint64) (download, upload uint64) {

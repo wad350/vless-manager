@@ -128,8 +128,9 @@ func waitForTun(timeout time.Duration) error {
 //     ip rule: fwmark 0x9911 → main → WAN (health/socket bypass).
 //  3. iptables FORWARD: br0 ↔ tun0 ACCEPT (Keenetic default is DROP).
 //
-// sing-box's "system" stack handles TCP/UDP via userspace NAT and answers
-// ICMP echo requests directly (fake reply from tun0), so LAN pings succeed.
+// sing-box's "system" stack handles TCP/UDP via userspace NAT. VLESS cannot
+// carry ICMP, so the generated sing-box route sends ICMP through its marked
+// direct outbound instead of dropping it at the proxy outbound.
 func EnableGlobalRoute(vlessHost string) error {
 	DisableGlobalRoute()
 	applied := false

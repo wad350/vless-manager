@@ -89,6 +89,7 @@ async function api(method, path, body) {
 
 let appBootstrapped = false;
 let operationsInterval;
+let speedTestInterval;
 
 function stopAppPolling() {
   clearInterval(statusInterval); statusInterval = null;
@@ -96,6 +97,7 @@ function stopAppPolling() {
   clearInterval(logInterval); logInterval = null;
   clearInterval(appUpdateStatusInterval); appUpdateStatusInterval = null;
   clearInterval(operationsInterval); operationsInterval = null;
+  clearInterval(speedTestInterval); speedTestInterval = null;
 }
 
 function showLogin(message = '') {
@@ -125,6 +127,7 @@ function showApp(auth) {
   startAppUpdateStatusPoll();
   startOperationsPoll();
   if (isStatusTabActive()) startTrafficPoll();
+  if (isStatusTabActive()) startSpeedTestPoll();
   if (isLogsTabActive()) startLogPoll();
 }
 
@@ -241,8 +244,10 @@ function activateTab(name, updateURL = true) {
 
   if (name === 'status') {
     if (!trafficInterval) startTrafficPoll();
+    if (!speedTestInterval) startSpeedTestPoll();
   } else {
     clearInterval(trafficInterval); trafficInterval = null;
+    clearInterval(speedTestInterval); speedTestInterval = null;
   }
   if (name === 'logs') {
     startLogPoll();
@@ -1245,14 +1250,19 @@ let trafficLast = null, trafficInterval;
 
 document.querySelectorAll('[data-traffic-mode]').forEach((button) => {
   button.addEventListener('click', () => {
-    trafficMode = button.dataset.trafficMode;
-    document.querySelectorAll('[data-traffic-mode]').forEach((item) => {
-      item.classList.toggle('active', item === button);
-    });
-    renderTrafficSummary(trafficLast);
-    drawTrafficChart();
+    selectTrafficMode(button.dataset.trafficMode);
   });
 });
+
+function selectTrafficMode(mode) {
+  if (!trafficSeries[mode]) return;
+  trafficMode = mode;
+  document.querySelectorAll('[data-traffic-mode]').forEach((item) => {
+    item.classList.toggle('active', item.dataset.trafficMode === mode);
+  });
+  renderTrafficSummary(trafficLast);
+  drawTrafficChart();
+}
 
 function startTrafficPoll() {
   fetchTraffic();
@@ -1415,6 +1425,100 @@ function fmtTrafficTime(timestamp) {
 }
 
 // =============================================================================
+// TUNNEL SPEED TEST
+// =============================================================================
+
+function startSpeedTestPoll() {
+  fetchSpeedTest();
+  clearInterval(speedTestInterval);
+  speedTestInterval = setInterval(fetchSpeedTest, 1000);
+}
+
+async function fetchSpeedTest() {
+  try {
+    renderSpeedTest(await api('GET', '/speedtest'));
+  } catch (_) {}
+}
+
+function renderSpeedTest(status = {}) {
+  const busy = ['queued', 'running', 'cancelling'].includes(status.state);
+  const completed = status.state === 'complete';
+  const progress = Math.max(0, Math.min(100, Number(status.progress || 0)));
+  const start = document.getElementById('speedtest-start');
+  const cancel = document.getElementById('speedtest-cancel');
+  const provider = document.getElementById('speedtest-provider');
+  const progressBox = document.getElementById('speedtest-progress');
+  const verification = document.getElementById('speedtest-verification');
+
+  start.disabled = busy;
+  provider.disabled = busy;
+  if (!provider.dataset.initialized) {
+    provider.value = localStorage.getItem('vless-speedtest-provider') || status.provider || provider.value;
+    provider.dataset.initialized = 'true';
+  }
+  if (busy && status.provider) provider.value = status.provider;
+  start.textContent = busy ? 'Тест выполняется' : completed ? 'Повторить тест' : 'Запустить тест';
+  cancel.hidden = !busy;
+  progressBox.hidden = !busy;
+  document.getElementById('speedtest-message').textContent = status.message || 'Подготовка';
+  document.getElementById('speedtest-progress-value').textContent = `${progress}%`;
+  document.getElementById('speedtest-progress-fill').style.width = `${progress}%`;
+  document.getElementById('speedtest-latency').textContent = status.latency_ms ? `${Number(status.latency_ms).toFixed(1)} мс` : '—';
+  document.getElementById('speedtest-jitter').textContent = status.jitter_ms ? `джиттер ${Number(status.jitter_ms).toFixed(1)} мс` : 'джиттер —';
+  document.getElementById('speedtest-download').textContent = status.download_mbps ? `${Number(status.download_mbps).toFixed(2)} Мбит/с` : '—';
+  document.getElementById('speedtest-upload').textContent = status.upload_mbps ? `${Number(status.upload_mbps).toFixed(2)} Мбит/с` : '—';
+  document.getElementById('speedtest-download-bytes').textContent = status.download_bytes ? fmtBytes(status.download_bytes) : '—';
+  document.getElementById('speedtest-upload-bytes').textContent = status.upload_bytes ? fmtBytes(status.upload_bytes) : '—';
+
+  const subtitle = document.getElementById('speedtest-subtitle');
+  if (status.completed_at) {
+    subtitle.textContent = `${status.server || 'Сервис измерения'} · ${new Date(status.completed_at).toLocaleString('ru')}`;
+  } else if (busy && status.server) {
+    subtitle.textContent = status.server;
+  } else {
+    subtitle.textContent = 'Последний замер через активный VLESS-сервер';
+  }
+
+  verification.hidden = !(completed || status.state === 'error' || status.state === 'cancelled');
+  if (completed) {
+    verification.className = `speedtest-verification ${status.tunnel_verified ? 'verified' : 'warning'}`;
+    verification.textContent = status.tunnel_verified
+      ? `Путь подтверждён счётчиком VLESS · ${fmtBytes(Number(status.tunnel_bytes || 0))}`
+      : 'Не удалось подтвердить прохождение тестовых данных через VLESS';
+  } else if (!verification.hidden) {
+    verification.className = 'speedtest-verification error';
+    verification.textContent = status.error || status.message || 'Тест не завершён';
+  }
+}
+
+document.getElementById('speedtest-start')?.addEventListener('click', async () => {
+  const button = document.getElementById('speedtest-start');
+  const provider = document.getElementById('speedtest-provider');
+  button.disabled = true;
+  try {
+    await api('POST', '/speedtest', { provider: provider.value });
+    toast('Тест скорости запущен', 'info');
+    fetchSpeedTest();
+  } catch (err) {
+    toast(err.message, 'err');
+    button.disabled = false;
+  }
+});
+
+document.getElementById('speedtest-provider')?.addEventListener('change', (event) => {
+  localStorage.setItem('vless-speedtest-provider', event.target.value);
+});
+
+document.getElementById('speedtest-cancel')?.addEventListener('click', async () => {
+  try {
+    await api('DELETE', '/speedtest');
+    fetchSpeedTest();
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
+// =============================================================================
 // VERSION FOOTER
 // =============================================================================
 
@@ -1443,9 +1547,11 @@ function isLogsTabActive() {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     clearInterval(trafficInterval);   trafficInterval = null;
+    clearInterval(speedTestInterval); speedTestInterval = null;
     clearInterval(logInterval);       logInterval = null;
   } else {
     if (isStatusTabActive() && !trafficInterval) startTrafficPoll();
+    if (isStatusTabActive() && !speedTestInterval) startSpeedTestPoll();
     if (isLogsTabActive() && !logInterval)       startLogPoll();
   }
 });

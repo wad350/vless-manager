@@ -47,6 +47,7 @@ func TestReadOnlyAPIEndpoints(t *testing.T) {
 		"/api/subscriptions",
 		"/api/ping",
 		"/api/traffic",
+		"/api/speedtest",
 		"/api/version",
 		"/api/update",
 		"/api/operations",

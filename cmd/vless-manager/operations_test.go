@@ -59,6 +59,41 @@ func TestOperationCoordinatorSerializesWork(t *testing.T) {
 	}
 }
 
+func TestOperationCoordinatorCancelsQueuedKind(t *testing.T) {
+	c := testCoordinator(t)
+	blockStarted := make(chan struct{})
+	releaseBlock := make(chan struct{})
+	go func() {
+		_ = c.Run(context.Background(), operationRequest{Kind: "ping"},
+			func(context.Context, func(operationProgress)) error {
+				close(blockStarted)
+				<-releaseBlock
+				return nil
+			})
+	}()
+	<-blockStarted
+
+	speedDone := make(chan error, 1)
+	go func() {
+		speedDone <- c.Run(context.Background(), operationRequest{Kind: "speedtest", Cancellable: true},
+			func(context.Context, func(operationProgress)) error {
+				t.Error("cancelled queued speedtest started")
+				return nil
+			})
+	}()
+	deadline := time.Now().Add(time.Second)
+	for len(c.Snapshot().Queue) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !c.CancelKind("speedtest") {
+		t.Fatal("queued speedtest was not cancelled")
+	}
+	if err := <-speedDone; !errors.Is(err, errOperationCancelled) {
+		t.Fatalf("cancel error=%v", err)
+	}
+	close(releaseBlock)
+}
+
 func TestOperationCoordinatorProgressAndCancel(t *testing.T) {
 	c := testCoordinator(t)
 	started := make(chan struct{})
