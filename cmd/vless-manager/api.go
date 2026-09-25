@@ -18,7 +18,7 @@ import (
 
 // apiServer is the REST front-end. All mutable shared state (cfg, subs) is
 // guarded by `mu`. Read-only handlers take RLock; mutation handlers take Lock.
-// Slow operations (ping tests, sing-box start/stop) must snapshot under lock
+// Slow operations (ping tests, Xray start/stop) must snapshot under lock
 // then release before doing the slow work, otherwise the UI status poll (2 s)
 // blocks for tens of seconds.
 // PingProgress reports the live state of a ping run so the UI
@@ -209,7 +209,7 @@ func (s *apiServer) runPingAllNamedCore(ctx context.Context, servers []VLESSServ
 	s.pingMu.Unlock()
 	report(operationProgress{Total: pingWorkUnitCount(servers), Message: "Подготавливаем проверку серверов"})
 
-	// WAN bypass rules so temp sing-box connections hit the VLESS servers
+	// WAN bypass rules so temp Xray connections hit the VLESS servers
 	// directly, not through the currently-active tunnel.
 	seen := map[string]bool{}
 	for _, srv := range physicalPingServers(servers) {
@@ -257,7 +257,7 @@ func (s *apiServer) runPingAllNamedCore(ctx context.Context, servers []VLESSServ
 		}
 		if !isSupportedServer(&srv) {
 			results[i].Incompat = true
-			results[i].Error = "transport not supported by sing-box: " + srv.Network
+			results[i].Error = "transport not supported by Xray: " + srv.Network
 			incompat++
 			s.pm.event(serviceLogDebug, "ping", "server.incompatible",
 				"сервер пропущен: транспорт не поддерживается",
@@ -321,7 +321,7 @@ func (s *apiServer) runPingAllNamedCore(ctx context.Context, servers []VLESSServ
 			timeout = 30 * time.Second
 		}
 		pingStartupWait = st.PingStartupSleep()
-		batchResults := pingBatchViaSingBoxContext(ctx, compatible, timeout, st.PingTestURL, effectiveParallel, onDone)
+		batchResults := pingBatchViaXrayContext(ctx, compatible, timeout, st.PingTestURL, effectiveParallel, onDone)
 		if ctx.Err() != nil {
 			s.pm.event(serviceLogInfo, "ping", "batch.cancelled",
 				"проверка серверов отменена",
@@ -599,7 +599,7 @@ func (s *apiServer) routes() {
 	// Traffic stats (tun0 rx/tx bytes since interface up)
 	s.mux.HandleFunc("/api/traffic", s.handleTraffic)
 	s.mux.HandleFunc("/api/speedtest", s.handleSpeedTest)
-	// Version info (manager + bundled sing-box)
+	// Version info (manager + bundled Xray)
 	s.mux.HandleFunc("/api/version", s.handleVersion)
 	// Application updates from signed-by-hash GitHub Release assets.
 	s.mux.HandleFunc("/api/update", s.handleUpdate)
@@ -819,7 +819,7 @@ func (s *apiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.pm.event(serviceLogInfo, "manager", "settings.updated",
 			"настройки сохранены",
 			field("service_log_level", out.ServiceLogLevel),
-			field("singbox_log_level", out.LogLevel),
+			field("xray_log_level", out.LogLevel),
 			field("ping_selection_mode", out.PingSelectionMode),
 			field("restart_required", restartRequired))
 		if restartRequired && s.pm.TunRunning() {
@@ -1588,7 +1588,7 @@ func (s *apiServer) handleServers(w http.ResponseWriter, r *http.Request) {
 		}
 		srv.Network = normalizeVLESSNetwork(srv.Network)
 		if !isSupportedServer(&srv) {
-			writeError(w, http.StatusBadRequest, "transport "+srv.Network+" is not supported by sing-box "+BundledSingBox)
+			writeError(w, http.StatusBadRequest, "transport "+srv.Network+" is not supported by Xray "+BundledXray)
 			return
 		}
 		if srv.Fingerprint == "" {
@@ -1650,7 +1650,7 @@ func (s *apiServer) handleServerByID(w http.ResponseWriter, r *http.Request) {
 		srv.Network = normalizeVLESSNetwork(srv.Network)
 		if !isSupportedServer(&srv) {
 			s.mu.Unlock()
-			writeError(w, http.StatusBadRequest, "transport "+srv.Network+" is not supported by sing-box "+BundledSingBox)
+			writeError(w, http.StatusBadRequest, "transport "+srv.Network+" is not supported by Xray "+BundledXray)
 			return
 		}
 		previousConfig := cloneConfig(s.cfg)
@@ -2195,7 +2195,7 @@ func (s *apiServer) handlePing(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, []PingResult{})
 			return
 		}
-		// Slow op (temporary sing-box instances) — no lock held.
+		// Slow op (temporary Xray instances) — no lock held.
 		results := s.runPingAll(all)
 		writeJSON(w, results)
 	default:
@@ -2299,7 +2299,7 @@ func (s *apiServer) handleParseURI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isSupportedServer(srv) {
-		writeError(w, http.StatusBadRequest, "transport "+srv.Network+" is not supported by sing-box "+BundledSingBox)
+		writeError(w, http.StatusBadRequest, "transport "+srv.Network+" is not supported by Xray "+BundledXray)
 		return
 	}
 	writeJSON(w, srv)
@@ -2695,7 +2695,7 @@ func (s *apiServer) refreshAllSubscriptionsCore(ctx context.Context, report func
 	// Re-sync manual cfg.Servers entries with whatever the subscriptions now
 	// say about the same server ID. Without this, transport tuning knobs
 	// that arrive via `extra={...}` (xmux, uplinkHTTPMethod, sc*Posts, …)
-	// never reach the running sing-box even after a refresh because the
+	// never reach the running Xray even after a refresh because the
 	// active server is looked up in cfg.Servers, not in s.subs.
 	activeBefore := s.cfg.ActiveServer
 	resynced := resyncServersFromSubs(s.cfg, s.subs)

@@ -10,6 +10,7 @@ import (
 )
 
 var lanIfaces = []string{"br0", "br-lan"}
+var tunnelProtocols = []string{"tcp", "udp"}
 
 const (
 	// vlessMangleChain holds per-destination bypass rules and the final
@@ -102,7 +103,7 @@ func keeneticUpstreamDNSServers(command func(string, ...string) (string, error))
 	return servers
 }
 
-// waitForTun polls until tun0 appears (sing-box creates it on Start) or
+// waitForTun polls until tun0 appears (Xray creates it on Start) or
 // the deadline passes. Returns an error if the interface never shows up.
 func waitForTun(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
@@ -128,9 +129,8 @@ func waitForTun(timeout time.Duration) error {
 //     ip rule: fwmark 0x9911 → main → WAN (health/socket bypass).
 //  3. iptables FORWARD: br0 ↔ tun0 ACCEPT (Keenetic default is DROP).
 //
-// sing-box's "system" stack handles TCP/UDP via userspace NAT. VLESS cannot
-// carry ICMP, so the generated sing-box route sends ICMP through its marked
-// direct outbound instead of dropping it at the proxy outbound.
+// Xray's TUN stack handles TCP/UDP. ICMP and other IP protocols keep the
+// router's normal WAN route because the mangle chain only marks TCP/UDP.
 func EnableGlobalRoute(vlessHost string) error {
 	DisableGlobalRoute()
 	applied := false
@@ -140,7 +140,7 @@ func EnableGlobalRoute(vlessHost string) error {
 		}
 	}()
 
-	// Wait for sing-box to bring up tun0 before we reference it in ip route.
+	// Wait for Xray to bring up tun0 before we reference it in ip route.
 	if err := waitForTun(10 * time.Second); err != nil {
 		return fmt.Errorf("waiting for %s: %v", tunIface, err)
 	}
@@ -197,9 +197,12 @@ func EnableGlobalRoute(vlessHost string) error {
 		}
 	}
 
-	// Everything else from LAN or local OUTPUT gets marked → routed to tun0.
-	if err := requireRouteCommand("add tunnel mark", "iptables", "-t", "mangle", "-A", vlessMangleChain, "-j", "MARK", "--set-mark", mark); err != nil {
-		return err
+	// VLESS carries TCP and UDP only. Leave ICMP and other IP protocols in
+	// the kernel's direct route instead of feeding unsupported packets to TUN.
+	for _, protocol := range tunnelProtocols {
+		if err := requireRouteCommand("add tunnel mark", "iptables", "-t", "mangle", "-A", vlessMangleChain, "-p", protocol, "-j", "MARK", "--set-mark", mark); err != nil {
+			return err
+		}
 	}
 
 	lanIface := chooseLanIface()
@@ -215,7 +218,7 @@ func EnableGlobalRoute(vlessHost string) error {
 	// INPUT chain: Keenetic defaults to DROP. The system stack rewrites client
 	// TCP/UDP packets (src=LAN_IP, dst=external) into (src=198.18.0.2,
 	// dst=198.18.0.1:listener_port) and writes them back to tun0. The kernel
-	// then delivers them via INPUT to sing-box's local TCP listener. Without
+	// then delivers them via INPUT to Xray's local TCP listener. Without
 	// this rule those rewritten packets are silently dropped (INPUT policy
 	// DROP), so the system stack's TCP listener never receives connections.
 	if err := requireRouteCommand("allow tunnel input", "iptables", "-I", "INPUT", "1", "-i", tunIface, "-j", "ACCEPT"); err != nil {
@@ -223,8 +226,8 @@ func EnableGlobalRoute(vlessHost string) error {
 	}
 
 	// FORWARD chain: Keenetic defaults to DROP; allow LAN ↔ tun0 traffic.
-	// br0/br-lan → tun0: LAN client packets going into sing-box.
-	// tun0 → (any): sing-box reply packets going back to LAN clients.
+	// br0/br-lan → tun0: LAN client packets going into Xray.
+	// tun0 → (any): Xray reply packets going back to LAN clients.
 	if err := requireRouteCommand("allow LAN tunnel forwarding", "iptables", "-A", "FORWARD", "-i", lanIface, "-o", tunIface, "-j", "ACCEPT"); err != nil {
 		return err
 	}
@@ -235,7 +238,7 @@ func EnableGlobalRoute(vlessHost string) error {
 	// POSTROUTING nat: Keenetic's _NDM_MASQ rule automatically masquerades
 	// all LAN (192.168.201.x) traffic exiting on any non-br0 interface,
 	// including tun0. Without this bypass, the source IP gets rewritten to
-	// 198.18.0.1 (tun0 address) before sing-box reads the packet — so the
+	// 198.18.0.1 (tun0 address) before Xray reads the packet — so the
 	// system-stack reply goes back to the router, not to the LAN client.
 	// Insert at position 1 so it fires before _NDM_IPSEC / _NDM_MASQ.
 	if err := requireRouteCommand("add tunnel NAT bypass", "iptables", "-t", "nat", "-I", "POSTROUTING", "1", "-o", tunIface, "-j", "RETURN"); err != nil {
@@ -275,9 +278,11 @@ func globalRouteReady(command func(string, ...string) (string, error)) bool {
 		return false
 	}
 	mark := fmt.Sprintf("0x%x/0xffffffff", tunFwmark)
-	if _, err := command("iptables", "-t", "mangle", "-C", vlessMangleChain,
-		"-j", "MARK", "--set-mark", mark); err != nil {
-		return false
+	for _, protocol := range tunnelProtocols {
+		if _, err := command("iptables", "-t", "mangle", "-C", vlessMangleChain,
+			"-p", protocol, "-j", "MARK", "--set-mark", mark); err != nil {
+			return false
+		}
 	}
 	for _, check := range [][]string{
 		{"iptables", "-C", "INPUT", "-i", tunIface, "-j", "ACCEPT"},

@@ -3,7 +3,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$SCRIPT_DIR/.."
-BUILD="$ROOT/build"
+BUILD="${BUILD_DIR:-$ROOT/build}"
+case "$BUILD" in
+    /*) ;;
+    *) BUILD="$ROOT/$BUILD" ;;
+esac
 VERSION="${VERSION:-1.2.0}"
 ARCH="${ARCH:-mipsel-3.4}"
 PKG_NAME="vless-manager_${VERSION}_${ARCH}"
@@ -19,7 +23,7 @@ mkdir -p "$PKG_DIR/opt/etc/init.d"
 mkdir -p "$PKG_DIR/opt/var/run"
 mkdir -p "$PKG_DIR/opt/share/vless-manager"
 
-# Binary: vless-manager embeds sing-box as a Go library.
+# Binary: vless-manager embeds Xray as a Go library.
 cp "$BUILD/vless-manager" "$PKG_DIR/opt/bin/vless-manager"
 chmod 755 "$PKG_DIR/opt/bin/vless-manager"
 
@@ -40,8 +44,8 @@ Package: vless-manager
 Version: ${VERSION}
 Architecture: ${ARCH}
 Maintainer: local
-Description: VLESS proxy manager with WebUI for Keenetic routers. Embeds sing-box
- as a library and runs a TUN/system-stack transparent tunnel. Policy routing
+Description: VLESS proxy manager with WebUI for Keenetic routers. Embeds Xray
+ as a library and runs a TUN transparent tunnel. Policy routing
  sends all external LAN and router TCP/UDP traffic through VLESS while
  LAN/private traffic and manager health probes stay on the WAN route.
  The MIPS package bundles iptables for offline installation on Keenetic.

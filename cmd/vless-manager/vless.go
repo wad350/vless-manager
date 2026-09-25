@@ -26,7 +26,7 @@ func serverFingerprint(srv VLESSServer) string {
 }
 
 // normalizeVLESSNetwork converts share-link and Xray naming variants to the
-// transport names understood by sing-box. Xray renamed its plain TCP transport
+// transport names understood by Xray. Xray renamed its plain TCP transport
 // from "tcp" to "raw"; on the wire they are the same transport (no V2Ray
 // transport block), so rejecting raw nodes would discard valid servers.
 func normalizeVLESSNetwork(network string) string {
@@ -38,7 +38,7 @@ func normalizeVLESSNetwork(network string) string {
 	case "http-upgrade", "http_upgrade":
 		return "httpupgrade"
 	case "splithttp":
-		// Xray's previous name for XHTTP. Official sing-box does not implement
+		// Xray's previous name for XHTTP. Official Xray does not implement
 		// either spelling, but canonicalizing it keeps filtering deterministic.
 		return "xhttp"
 	default:
@@ -245,7 +245,7 @@ func applyXHTTPExtra(srv *VLESSServer, raw string) {
 		if err := json.Unmarshal(v, &hdrs); err == nil && len(hdrs) > 0 {
 			srv.XHTTPHeaders = make(map[string]string, len(hdrs))
 			for k, val := range hdrs {
-				// Keep Host in the dedicated XHTTP field. The extended engine
+				// Keep Host in the dedicated XHTTP field. Xray
 				// rejects Host inside the generic headers object.
 				if strings.EqualFold(k, "host") {
 					if srv.Host == "" {
@@ -268,7 +268,7 @@ func applyXHTTPExtra(srv *VLESSServer, raw string) {
 		srv.DownloadSettings = normalizeRawObjectKeys(v)
 	}
 
-	// Stash the full extra blob so singbox.go can replay every recognised
+	// Stash the full extra blob so xray.go can replay every recognised
 	// camelCase key into the xhttp transport — keeps us forward-compatible
 	// with new Xray fields without re-touching the parser.
 	srv.Extra = json.RawMessage([]byte(raw))

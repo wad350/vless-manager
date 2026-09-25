@@ -525,7 +525,7 @@ func fetchSubscriptionWithClientContext(ctx context.Context, url string, client 
 
 	if len(servers) == 0 {
 		if unsupportedCount > 0 {
-			return nil, fmt.Errorf("subscription contains no transports supported by sing-box %s (%d excluded)", BundledSingBox, unsupportedCount)
+			return nil, fmt.Errorf("subscription contains no transports supported by Xray %s (%d excluded)", BundledXray, unsupportedCount)
 		}
 		if placeholderCount > 0 {
 			return nil, fmt.Errorf("subscription returned only placeholder nodes; provider rejected this client/app")
@@ -815,7 +815,7 @@ func rawJSONFirstString(raw json.RawMessage) string {
 	return ""
 }
 
-func httpClientViaVLESS(srv *VLESSServer, timeout, startupWait time.Duration, logs *ringBuffer) (*http.Client, boxHandle, error) {
+func httpClientViaVLESS(srv *VLESSServer, timeout, startupWait time.Duration, logs *ringBuffer) (*http.Client, engineHandle, error) {
 	box, port, err := startTemporaryVLESSSOCKS(srv, logs)
 	if err != nil {
 		return nil, nil, err

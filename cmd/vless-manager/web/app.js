@@ -916,8 +916,8 @@ function renderSub(sub, priorityIndex, subscriptionCount) {
 }
 
 // protocolTag returns a chip describing the VLESS encryption + transport.
-// The transport is highlighted red when sing-box can't speak it.
-const SUPPORTED_NETWORKS = new Set(['', 'tcp', 'ws', 'grpc', 'h2', 'http', 'httpupgrade', 'quic', 'auto']);
+// The transport is highlighted red when Xray can't speak it.
+const SUPPORTED_NETWORKS = new Set(['', 'tcp', 'raw', 'ws', 'grpc', 'httpupgrade', 'xhttp', 'auto']);
 function protocolTag(s) {
   if (s.members?.length) {
     return `<span class="tag reality">VLESS</span><span class="tag transport">авто</span>`;
@@ -930,7 +930,7 @@ function protocolTag(s) {
   const net = (s.network || 'tcp').toLowerCase();
   const netUnsupported = !SUPPORTED_NETWORKS.has(net);
   const incompatTitle = netUnsupported
-    ? ` title="Транспорт ${esc(net)} не поддерживается sing-box — этот сервер использовать нельзя"`
+    ? ` title="Транспорт ${esc(net)} не поддерживается Xray — этот сервер использовать нельзя"`
     : '';
   return `<span class="tag ${secCls}">${secLabel}</span>` +
          `<span class="tag transport${netUnsupported ? ' unsupported' : ''}"${incompatTitle}>${esc(net)}</span>`;
@@ -948,7 +948,7 @@ function pingBadge(pr) {
   }
   if (pr.incompatible) {
     return `<span class="ping-badge incompatible" ` +
-           `title="${esc(pr.error || 'transport не поддерживается sing-box')}">несовм.</span>`;
+           `title="${esc(pr.error || 'transport не поддерживается Xray')}">несовм.</span>`;
   }
   if (pr.latency_ms < 0) {
     return `<span class="ping-badge bad" title="${esc(pr.error || '')}">недоступен</span>`;
@@ -1527,7 +1527,7 @@ async function loadVersion() {
     const v = await api('GET', '/version');
     const date = v.build_date && v.build_date !== 'unknown' ? ` · ${v.build_date}` : '';
     document.getElementById('footer-version').textContent =
-      `vless-manager ${v.manager} · sing-box ${v.sing_box}${date}`;
+      `vless-manager ${v.manager} · Xray ${v.xray}${date}`;
   } catch (_) {}
 }
 
@@ -1573,10 +1573,12 @@ const SERVICE_LOG_LEVEL_OPTIONS = [
   { value: 'trace', label: 'TRACE: максимальная детализация' },
 ];
 
-const SINGBOX_LOG_LEVEL_OPTIONS = [
-  { value: 'panic', label: 'PANIC: только аварийная остановка' },
-  { value: 'fatal', label: 'FATAL: только критические сбои' },
-  ...SERVICE_LOG_LEVEL_OPTIONS,
+const XRAY_LOG_LEVEL_OPTIONS = [
+  { value: 'none', label: 'NONE: не записывать' },
+  { value: 'error', label: 'ERROR: ошибки' },
+  { value: 'warn', label: 'WARN: предупреждения и ошибки' },
+  { value: 'info', label: 'INFO: обычная работа' },
+  { value: 'debug', label: 'DEBUG: диагностические сведения' },
 ];
 
 const SETTINGS_SCHEMA = [
@@ -1682,11 +1684,11 @@ const SETTINGS_SCHEMA = [
         ],
       },
       {
-        title: 'sing-box',
+        title: 'Xray',
         description: 'Журнал сетевого движка. Чем ниже уровень в списке, тем больше записей.',
         items: [
-          { key: 'log_level', label: 'Уровень логирования', type: 'select', options: SINGBOX_LOG_LEVEL_OPTIONS,
-            hint: 'Соединения, маршрутизация, DNS и ошибки сетевого движка sing-box' },
+          { key: 'log_level', label: 'Уровень логирования', type: 'select', options: XRAY_LOG_LEVEL_OPTIONS,
+            hint: 'Соединения, маршрутизация, DNS и ошибки сетевого движка Xray' },
         ],
       },
     ],
@@ -1733,7 +1735,7 @@ const SETTINGS_SCHEMA = [
             hint: 'Максимальное время запуска туннеля и получения HTTP-ответа от одного сервера' },
           { key: 'ping_max_parallel', label: 'Одновременных проверок', type: 'int', min: 0,
             hint: '0 или 1 запускает тесты последовательно; другое значение задаёт точное число одновременных проверок' },
-          { key: 'ping_startup_sleep_ms', label: 'Ожидание временного sing-box', unit: 'мс', type: 'int', min: 50,
+          { key: 'ping_startup_sleep_ms', label: 'Ожидание временного Xray', unit: 'мс', type: 'int', min: 50,
             hint: 'Пауза после запуска тестового процесса перед первым HTTP-запросом' },
         ],
       },

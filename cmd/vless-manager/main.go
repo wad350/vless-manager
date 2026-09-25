@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"flag"
 	"fmt"
@@ -18,12 +19,22 @@ import (
 var webFS embed.FS
 
 func main() {
+	dataDir := flag.String("data-dir", "/opt/etc/vless-manager", "Config/data directory")
+	probeSelected := flag.Bool("probe-selected", false, "Probe the selected VLESS server without changing routing")
+	flag.Parse()
+	if *probeSelected {
+		if err := probeSelectedServer(*dataDir); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	// Single combined process: protect from OOM killer at highest priority
-	// (same as ndm, the router's own daemon). With sing-box embedded there is
+	// (same as ndm, the router's own daemon). With Xray embedded there is
 	// only one Go runtime to protect instead of two.
 	_ = os.WriteFile("/proc/self/oom_score_adj", []byte("-1000"), 0644)
 
-	// Raise fd limit — TPROXY opens two sockets per LAN connection.
+	// Raise fd limit for concurrent TUN and outbound connections.
 	_ = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &syscall.Rlimit{
 		Cur: 65536, Max: 65536,
 	})
@@ -32,14 +43,14 @@ func main() {
 	// for a transparent proxy under load.
 	_ = os.WriteFile("/proc/sys/fs/file-max", []byte("131072\n"), 0644)
 
-	dataDir := flag.String("data-dir", "/opt/etc/vless-manager", "Config/data directory")
-	flag.Parse()
-
 	cfgPath := filepath.Join(*dataDir, "config.json")
 	subPath := filepath.Join(*dataDir, "subscriptions.json")
 
 	if err := os.MkdirAll(*dataDir, 0755); err != nil {
 		log.Fatal(err)
+	}
+	if err := backupBeforeXray(*dataDir); err != nil {
+		log.Fatalf("backup before Xray migration: %v", err)
 	}
 	if err := initializeSubscriptionDeviceID(*dataDir); err != nil {
 		log.Fatalf("initialize subscription device ID: %v", err)
@@ -196,4 +207,22 @@ func main() {
 	if err := server.Serve(ln); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func probeSelectedServer(dataDir string) error {
+	cfg, err := loadConfig(filepath.Join(dataDir, "config.json"))
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	server := cfg.activeServer()
+	if server == nil {
+		return fmt.Errorf("no selected server in config.json")
+	}
+	result := pingOneThroughVLESSContext(context.Background(), server,
+		cfg.Settings.PingTimeout(), cfg.Settings.PingTestURL)
+	if result.Error != "" {
+		return fmt.Errorf("Xray probe %s: %s", server.Name, result.Error)
+	}
+	fmt.Printf("Xray probe passed: %s (%d ms)\n", server.Name, result.LatencyMS)
+	return nil
 }

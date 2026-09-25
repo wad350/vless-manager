@@ -18,9 +18,9 @@ import (
 const defaultPingTestURL = "http://www.gstatic.com/generate_204"
 
 // PingResult is the latency / availability / compatibility of one VLESS
-// endpoint as measured by an HTTP GET via a temporary sing-box that uses
+// endpoint as measured by an HTTP GET via a temporary Xray that uses
 // THIS specific server as its outbound. Marked incompatible upfront if the
-// transport is not supported by sing-box.
+// transport is not supported by Xray.
 type PingResult struct {
 	ServerID         string    `json:"server_id"`
 	ServerName       string    `json:"server_name"`
@@ -34,24 +34,26 @@ type PingResult struct {
 	SelectedMemberID string    `json:"selected_member_id,omitempty"`
 }
 
-// supportedNetworks — VLESS transports sing-box can actually speak.
+// supportedNetworks — VLESS transports Xray can actually speak.
 var supportedNetworks = map[string]bool{
 	"":            true,
 	"tcp":         true,
 	"ws":          true,
 	"grpc":        true,
-	"h2":          true,
-	"http":        true,
 	"httpupgrade": true,
-	"quic":        true,
 	"xhttp":       true,
 }
 
 func isSupportedServer(srv *VLESSServer) bool {
 	if len(srv.Members) > 0 {
+		for i := range srv.Members {
+			if !isSupportedServer(&srv.Members[i]) {
+				return false
+			}
+		}
 		return true
 	}
-	return supportedNetworks[normalizeVLESSNetwork(srv.Network)]
+	return supportedNetworks[normalizeVLESSNetwork(srv.Network)] && (srv.PacketEncoding == "" || srv.PacketEncoding == "xudp")
 }
 
 func describeProtocol(srv *VLESSServer) string {
@@ -129,8 +131,8 @@ func pingHTTPStatusOK(status int) bool {
 	return status >= http.StatusOK && status < http.StatusBadRequest
 }
 
-// pingBatchViaSingBox tests each server with a real VLESS connection by
-// starting a temporary embedded sing-box per probe (SOCKS5 inbound + VLESS
+// pingBatchViaXray tests each server with a real VLESS connection by
+// starting a temporary embedded Xray per probe (SOCKS5 inbound + VLESS
 // outbound), measuring HTTP GET → testURL through it, then closing.
 //
 // `maxParallel` controls concurrency:
@@ -139,11 +141,11 @@ func pingHTTPStatusOK(status int) bool {
 //	>= 2 → fan-out via a semaphore with the exact configured concurrency
 //
 // onDone is invoked per server as its result lands; may be nil.
-func pingBatchViaSingBox(servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
-	return pingBatchViaSingBoxContext(context.Background(), servers, timeout, testURL, maxParallel, onDone)
+func pingBatchViaXray(servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
+	return pingBatchViaXrayContext(context.Background(), servers, timeout, testURL, maxParallel, onDone)
 }
 
-func pingBatchViaSingBoxContext(ctx context.Context, servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
+func pingBatchViaXrayContext(ctx context.Context, servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
 	if containsServerGroup(servers) {
 		return pingServerGroups(ctx, servers, timeout, testURL, maxParallel, onDone)
 	}
@@ -179,7 +181,7 @@ func pingBatchViaSingBoxContext(ctx context.Context, servers []VLESSServer, time
 		return results
 	}
 	// Bounded fan-out — each goroutine blocks until a semaphore slot frees,
-	// so we never run more than maxParallel temp sing-boxes at once.
+	// so we never run more than maxParallel temp Xrayes at once.
 	sem := make(chan struct{}, maxParallel)
 	var wg sync.WaitGroup
 	for i := range servers {
@@ -252,13 +254,13 @@ func physicalPingServers(servers []VLESSServer) []VLESSServer {
 // pingServerGroups probes every distinct physical endpoint once and derives a
 // logical profile result from its fastest reachable member. Provider auto
 // profiles heavily overlap; probing each profile independently would turn 50
-// endpoints into hundreds of temporary sing-box instances on the router.
+// endpoints into hundreds of temporary Xray instances on the router.
 func pingServerGroups(ctx context.Context, servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
 	leaves := physicalPingServers(servers)
 	// Forward physical endpoint completions immediately. Waiting until every
 	// leaf is done before reporting logical profiles leaves the UI at 0/N for
 	// the entire batch and incorrectly looks like a hung selection.
-	leafResults := pingBatchViaSingBoxContext(ctx, leaves, timeout, testURL, maxParallel, onDone)
+	leafResults := pingBatchViaXrayContext(ctx, leaves, timeout, testURL, maxParallel, onDone)
 	byID := make(map[string]PingResult, len(leafResults))
 	for _, result := range leafResults {
 		byID[result.ServerID] = result
@@ -290,7 +292,7 @@ func pingServerGroups(ctx context.Context, servers []VLESSServer, timeout time.D
 }
 
 // pingTCPFallback — raw TCP-connect to VLESS host:port, used as fallback
-// when a temporary sing-box instance cannot be started.
+// when a temporary Xray instance cannot be started.
 func pingTCPFallback(srv *VLESSServer, timeout time.Duration) PingResult {
 	res := PingResult{
 		ServerID:   srv.ID,

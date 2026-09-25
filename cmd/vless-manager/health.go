@@ -183,7 +183,7 @@ func wanDial(timeout time.Duration) func(string, string) (net.Conn, error) {
 }
 
 // WaitForWAN blocks until a WAN-only HTTP probe succeeds or the timeout
-// elapses. Used at boot to defer starting sing-box until the modem has
+// elapses. Used at boot to defer starting Xray until the modem has
 // finished bringing the default route up.
 //
 // Uses exponential backoff (0.5 s → 1 s → 2 s → 3 s, then constant) to

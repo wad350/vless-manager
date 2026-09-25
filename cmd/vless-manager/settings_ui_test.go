@@ -70,10 +70,13 @@ func TestSettingsUIUsesStandardLogLevelNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	js := string(appJS)
-	for _, level := range []string{"ERROR:", "WARN:", "INFO:", "DEBUG:", "TRACE:", "FATAL:", "PANIC:"} {
+	for _, level := range []string{"NONE:", "ERROR:", "WARN:", "INFO:", "DEBUG:", "TRACE:"} {
 		if !strings.Contains(js, level) {
 			t.Errorf("web/app.js is missing standard log level label %q", level)
 		}
+	}
+	if strings.Contains(js, "FATAL:") || strings.Contains(js, "PANIC:") {
+		t.Error("Xray settings still show removed log levels")
 	}
 	if !strings.Contains(js, "Уровень логирования") {
 		t.Error("web/app.js is missing the log level field label")

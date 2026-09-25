@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -103,6 +104,29 @@ func TestRunTunnelSpeedTestHonorsCancellation(t *testing.T) {
 	}, func(speedTestStatus) {})
 	if err == nil {
 		t.Fatal("cancelled speed test returned no error")
+	}
+}
+
+func TestSpeedTestPhaseUsesPartialSampleAtDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/partial" {
+			_, _ = io.CopyN(w, zeroReader{}, 2<<20)
+			w.(http.Flusher).Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	config := speedTestConfig{
+		Client: server.Client(), DownloadParam: "bytes", DownloadUnit: 1,
+		PhaseLimit: 200 * time.Millisecond,
+	}
+	bytes, _, err := runSpeedTestPhase(context.Background(), config, http.MethodGet, server.URL+"/partial", 4<<20, 1, func(int64) {})
+	if err != nil || bytes < 1<<20 || bytes >= 4<<20 {
+		t.Fatalf("partial sample: bytes=%d, err=%v", bytes, err)
+	}
+	bytes, _, err = runSpeedTestPhase(context.Background(), config, http.MethodGet, server.URL+"/no-data", 4<<20, 1, func(int64) {})
+	if !errors.Is(err, context.DeadlineExceeded) || bytes != 0 {
+		t.Fatalf("empty sample: bytes=%d, err=%v", bytes, err)
 	}
 }
 

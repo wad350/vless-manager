@@ -49,7 +49,7 @@ func TestParseVLESSXHTTPURI(t *testing.T) {
 		t.Fatalf("network = %q, want xhttp", srv.Network)
 	}
 	if !isSupportedServer(srv) {
-		t.Fatal("xhttp must be supported by extended sing-box")
+		t.Fatal("xhttp must be supported by Xray")
 	}
 }
 
@@ -61,12 +61,12 @@ func TestParseVLESSNormalizesRawToTCP(t *testing.T) {
 	if srv.Network != "tcp" || !isSupportedServer(srv) {
 		t.Fatalf("raw transport parsed as network=%q supported=%v", srv.Network, isSupportedServer(srv))
 	}
-	out, err := buildSingBoxVLESSOutbound(srv)
+	out, err := buildXrayVLESSOutbound(srv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := out["transport"]; exists {
-		t.Fatalf("plain TCP/raw outbound must not contain a transport block: %#v", out["transport"])
+	if out["streamSettings"].(map[string]any)["network"] != "raw" {
+		t.Fatalf("TCP must use raw: %#v", out)
 	}
 }
 
@@ -86,12 +86,12 @@ func TestParseVLESSPacketEncoding(t *testing.T) {
 	if serverFingerprint(*plain) == serverFingerprint(*xudp) {
 		t.Fatal("profiles with different packet encodings have the same ID")
 	}
-	out, err := buildSingBoxVLESSOutbound(xudp)
+	out, err := buildXrayVLESSOutbound(xudp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out["packet_encoding"] != "xudp" {
-		t.Fatalf("packet_encoding = %v, want xudp", out["packet_encoding"])
+	if out["mux"].(map[string]any)["xudpConcurrency"] != 16 {
+		t.Fatalf("XUDP not enabled: %#v", out)
 	}
 }
 
@@ -103,13 +103,14 @@ func TestParseVLESSGRPCServiceName(t *testing.T) {
 	if srv.Network != "grpc" || srv.Path != "artemida-grpc" || !isSupportedServer(srv) {
 		t.Fatalf("gRPC transport parsed incorrectly: %+v", srv)
 	}
-	out, err := buildSingBoxVLESSOutbound(srv)
+	out, err := buildXrayVLESSOutbound(srv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport, ok := out["transport"].(map[string]any)
-	if !ok || transport["type"] != "grpc" || transport["service_name"] != "artemida-grpc" {
-		t.Fatalf("gRPC transport generated incorrectly: %#v", out["transport"])
+	stream := out["streamSettings"].(map[string]any)
+	transport, ok := stream["grpcSettings"].(map[string]any)
+	if !ok || stream["network"] != "grpc" || transport["serviceName"] != "artemida-grpc" {
+		t.Fatalf("gRPC transport generated incorrectly: %#v", stream)
 	}
 }
 
@@ -143,8 +144,8 @@ func TestParseVLESSXHTTPExtra(t *testing.T) {
 	}
 }
 
-func TestBuildSingBoxSupportsXHTTP(t *testing.T) {
-	out, err := buildSingBoxVLESSOutbound(&VLESSServer{
+func TestBuildXraySupportsXHTTP(t *testing.T) {
+	out, err := buildXrayVLESSOutbound(&VLESSServer{
 		Address: "example.com",
 		Port:    443,
 		UUID:    "00000000-0000-0000-0000-000000000000",
@@ -156,18 +157,18 @@ func TestBuildSingBoxSupportsXHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport := out["transport"].(map[string]any)
-	if transport["type"] != "xhttp" || transport["mode"] != "stream-up" || transport["host"] != "cdn.example" || transport["path"] != "/app" {
+	transport := out["streamSettings"].(map[string]any)["xhttpSettings"].(map[string]any)
+	if transport["mode"] != "stream-up" || transport["host"] != "cdn.example" || transport["path"] != "/app" {
 		t.Fatalf("XHTTP transport generated incorrectly: %#v", transport)
 	}
-	if transport["x_padding_bytes"] != "100-1000" {
-		t.Fatalf("default XHTTP padding = %v", transport["x_padding_bytes"])
+	if transport["xPaddingBytes"] != "100-1000" {
+		t.Fatalf("default XHTTP padding = %v", transport["xPaddingBytes"])
 	}
 }
 
-func TestBuildSingBoxXHTTPPreservesExtendedOptions(t *testing.T) {
+func TestBuildXrayXHTTPPreservesExtendedOptions(t *testing.T) {
 	extra := json.RawMessage(`{"mode":"auto","xPaddingBytes":"","scMaxEachPostBytes":0,"noSSEHeader":false,"uplinkHTTPMethod":"POST","sessionIDKey":"X-Auth-Token","sessionIDPlacement":"header","xmux":{"maxConcurrency":"16-32","hKeepAlivePeriod":0}}`)
-	out, err := buildSingBoxVLESSOutbound(&VLESSServer{
+	out, err := buildXrayVLESSOutbound(&VLESSServer{
 		Address: "example.com", Port: 443, UUID: "00000000-0000-0000-0000-000000000000",
 		Network: "xhttp", Security: "tls", SNI: "example.com", Path: "/sync", Host: "cdn.example",
 		Extra: extra,
@@ -175,24 +176,24 @@ func TestBuildSingBoxXHTTPPreservesExtendedOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport := out["transport"].(map[string]any)
-	if transport["session_key"] != "X-Auth-Token" || transport["session_placement"] != "header" || transport["uplink_http_method"] != "POST" {
+	transport := out["streamSettings"].(map[string]any)["xhttpSettings"].(map[string]any)
+	if transport["sessionKey"] != "X-Auth-Token" || transport["sessionPlacement"] != "header" || transport["uplinkHTTPMethod"] != "POST" {
 		t.Fatalf("extended fields lost: %#v", transport)
 	}
-	if transport["x_padding_bytes"] != "100-1000" {
+	if transport["xPaddingBytes"] != "100-1000" {
 		t.Fatalf("empty provider padding was not normalized: %#v", transport)
 	}
-	if _, exists := transport["sc_max_each_post_bytes"]; exists {
-		t.Fatalf("zero provider post size must use the engine default: %#v", transport)
+	if transport["scMaxEachPostBytes"] != float64(0) {
+		t.Fatalf("provider post size not retained: %#v", transport)
 	}
 	xmux := transport["xmux"].(map[string]any)
-	if xmux["max_concurrency"] != "16-32" || xmux["h_keep_alive_period"] != float64(0) {
+	if xmux["maxConcurrency"] != "16-32" || xmux["hKeepAlivePeriod"] != float64(0) {
 		t.Fatalf("xmux fields lost: %#v", xmux)
 	}
 }
 
-func TestBuildSingBoxSupportsQUIC(t *testing.T) {
-	out, err := buildSingBoxVLESSOutbound(&VLESSServer{
+func TestBuildXrayRejectsRemovedQUICTransport(t *testing.T) {
+	_, err := buildXrayVLESSOutbound(&VLESSServer{
 		Address:  "example.com",
 		Port:     443,
 		UUID:     "00000000-0000-0000-0000-000000000000",
@@ -200,32 +201,29 @@ func TestBuildSingBoxSupportsQUIC(t *testing.T) {
 		Security: "tls",
 		SNI:      "example.com",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	transport := out["transport"].(map[string]any)
-	if transport["type"] != "quic" {
-		t.Fatalf("transport.type = %v, want quic", transport["type"])
+	if err == nil {
+		t.Fatal("removed QUIC transport must be rejected")
 	}
 }
 
-func TestBuildSingBoxDefaultsUDPToXUDP(t *testing.T) {
-	out, err := buildSingBoxVLESSOutbound(&VLESSServer{
+func TestBuildXrayDefaultsUDPToXUDP(t *testing.T) {
+	out, err := buildXrayVLESSOutbound(&VLESSServer{
 		Address: "example.com", Port: 443,
 		UUID: "00000000-0000-0000-0000-000000000000", Network: "tcp",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out["packet_encoding"] != "xudp" {
-		t.Fatalf("default packet_encoding = %v, want xudp", out["packet_encoding"])
+	mux := out["mux"].(map[string]any)
+	if mux["xudpConcurrency"] != 16 || mux["xudpProxyUDP443"] != "allow" {
+		t.Fatalf("unexpected XUDP settings: %#v", mux)
 	}
 }
 
 func TestGeneratedTunMTUIsFixedAt1500(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Settings.BypassRouteRussia = false
-	data, err := generateSingBoxConfig(cfg, &VLESSServer{
+	data, err := generateXrayConfig(cfg, &VLESSServer{
 		Address: "example.com",
 		Port:    443,
 		UUID:    "00000000-0000-0000-0000-000000000001",
@@ -239,23 +237,23 @@ func TestGeneratedTunMTUIsFixedAt1500(t *testing.T) {
 		t.Fatal(err)
 	}
 	inbounds := generated["inbounds"].([]any)
-	tun := inbounds[0].(map[string]any)
+	tun := inbounds[0].(map[string]any)["settings"].(map[string]any)
 	if tun["mtu"] != float64(1500) {
 		t.Fatalf("TUN MTU = %v, want 1500", tun["mtu"])
 	}
-	addresses, ok := tun["address"].([]any)
+	addresses, ok := tun["gateway"].([]any)
 	if !ok || len(addresses) != 1 || addresses[0] != tunAddr {
-		t.Fatalf("TUN address = %v, want [%q]", tun["address"], tunAddr)
+		t.Fatalf("TUN gateway = %v, want [%q]", tun["gateway"], tunAddr)
 	}
 	if _, exists := tun["inet4_address"]; exists {
 		t.Fatal("generated config contains removed inet4_address field")
 	}
 }
 
-func TestGeneratedConfigRoutesICMPDirectBeforeSniff(t *testing.T) {
+func TestGeneratedConfigRoutesPublicTCPUDPThroughProxy(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Settings.BypassRouteRussia = false
-	data, err := generateSingBoxConfig(cfg, &VLESSServer{
+	data, err := generateXrayConfig(cfg, &VLESSServer{
 		Address: "example.com",
 		Port:    443,
 		UUID:    "00000000-0000-0000-0000-000000000001",
@@ -268,35 +266,48 @@ func TestGeneratedConfigRoutesICMPDirectBeforeSniff(t *testing.T) {
 	if err := json.Unmarshal(data, &generated); err != nil {
 		t.Fatal(err)
 	}
-	route := generated["route"].(map[string]any)
+	route := generated["routing"].(map[string]any)
 	rules := route["rules"].([]any)
 	if len(rules) < 2 {
-		t.Fatalf("route rules = %#v, want ICMP and sniff rules", rules)
+		t.Fatalf("route rules = %#v, want private bypass and proxy rules", rules)
 	}
-	icmpRule := rules[0].(map[string]any)
-	if icmpRule["network"] != "icmp" || icmpRule["outbound"] != "direct" {
-		t.Fatalf("first route rule = %#v, want ICMP through direct", icmpRule)
+	privateRule := rules[0].(map[string]any)
+	if privateRule["ip"] == nil || privateRule["outboundTag"] != "direct" {
+		t.Fatalf("first route rule = %#v, want private bypass", privateRule)
 	}
-	if sniffRule := rules[1].(map[string]any); sniffRule["action"] != "sniff" {
-		t.Fatalf("second route rule = %#v, want sniff action", sniffRule)
+	if final := rules[len(rules)-1].(map[string]any); final["network"] != "tcp,udp" || final["outboundTag"] != "proxy" {
+		t.Fatalf("unexpected final rule: %#v", final)
+	}
+	if len(tunnelProtocols) != 2 || tunnelProtocols[0] != "tcp" || tunnelProtocols[1] != "udp" {
+		t.Fatalf("unsupported IP protocols must stay outside TUN: %v", tunnelProtocols)
 	}
 }
 
-func TestBuildSingBoxAutoProfile(t *testing.T) {
+func TestBuildXrayAutoProfile(t *testing.T) {
 	profile := &VLESSServer{Name: "Auto", Members: []VLESSServer{
 		{Address: "one.example", Port: 443, UUID: "00000000-0000-0000-0000-000000000301", Network: "tcp"},
 		{Address: "two.example", Port: 443, UUID: "00000000-0000-0000-0000-000000000302", Network: "grpc", Path: "grpc"},
 	}}
-	outs, err := buildSingBoxProxyOutbounds(profile)
+	outs, err := buildXrayProxyOutbounds(profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(outs) != 3 || outs[2]["type"] != "urltest" || outs[2]["tag"] != "proxy" {
+	if len(outs) != 2 || outs[0]["tag"] != "proxy-1" || outs[1]["tag"] != "proxy-2" {
 		t.Fatalf("unexpected profile outbounds: %#v", outs)
 	}
-	tags, ok := outs[2]["outbounds"].([]string)
-	if !ok || len(tags) != 2 || tags[0] != "proxy-1" || tags[1] != "proxy-2" {
-		t.Fatalf("unexpected urltest members: %#v", outs[2]["outbounds"])
+	config, err := xrayBaseConfig(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := parseXrayConfig(data); err != nil {
+		t.Fatal(err)
+	}
+	if config["observatory"] == nil || config["routing"].(map[string]any)["balancers"] == nil {
+		t.Fatal("profile lacks automatic selection")
 	}
 }
 

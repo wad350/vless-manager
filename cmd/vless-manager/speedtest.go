@@ -73,6 +73,7 @@ type speedTestConfig struct {
 	DownloadUnit  int64
 	UploadUnit    int64
 	CacheBust     bool
+	PhaseLimit    time.Duration
 }
 
 type speedTestStartRequest struct {
@@ -576,7 +577,11 @@ func measureSpeedTestLatency(ctx context.Context, cfg speedTestConfig) (float64,
 }
 
 func runSpeedTestPhase(ctx context.Context, cfg speedTestConfig, method, endpoint string, totalBytes int64, workers int, progress func(int64)) (int64, time.Duration, error) {
-	phaseCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	phaseLimit := cfg.PhaseLimit
+	if phaseLimit <= 0 {
+		phaseLimit = 25 * time.Second
+	}
+	phaseCtx, cancel := context.WithTimeout(ctx, phaseLimit)
 	defer cancel()
 	var transferred atomic.Int64
 	var firstErr error
@@ -607,26 +612,35 @@ func runSpeedTestPhase(ctx context.Context, cfg speedTestConfig, method, endpoin
 	go func() { wg.Wait(); close(done) }()
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	finish := func() (int64, time.Duration, error) {
+		bytes := transferred.Load()
+		progress(bytes)
+		elapsed := time.Since(started)
+		if err := ctx.Err(); err != nil {
+			return bytes, elapsed, err
+		}
+		if errors.Is(phaseCtx.Err(), context.DeadlineExceeded) && bytes >= min(int64(1<<20), totalBytes) &&
+			(firstErr == nil || errors.Is(firstErr, context.Canceled) || errors.Is(firstErr, context.DeadlineExceeded)) {
+			return bytes, elapsed, nil
+		}
+		if firstErr != nil {
+			return bytes, elapsed, firstErr
+		}
+		return bytes, elapsed, phaseCtx.Err()
+	}
 	for {
 		select {
 		case <-done:
-			progress(transferred.Load())
-			if ctx.Err() != nil {
-				return transferred.Load(), time.Since(started), ctx.Err()
-			}
-			if firstErr != nil {
-				return transferred.Load(), time.Since(started), firstErr
-			}
-			return transferred.Load(), time.Since(started), nil
+			return finish()
 		case <-ticker.C:
 			progress(transferred.Load())
 		case <-ctx.Done():
 			cancel()
 			<-done
-			return transferred.Load(), time.Since(started), ctx.Err()
+			return finish()
 		case <-phaseCtx.Done():
 			<-done
-			return transferred.Load(), time.Since(started), phaseCtx.Err()
+			return finish()
 		}
 	}
 }

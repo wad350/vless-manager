@@ -49,7 +49,7 @@ func parseDomainList(raw string) []string {
 }
 
 // bypassDomainsFor returns the combined domain_suffix list to feed into the
-// sing-box `direct` route rule. Order:
+// Xray `direct` route rule. Order:
 //
 //  1. Built-in RU whitelist (if cfg toggle is on) — covers ya.ru, mail.ru,
 //     vk.ru, gosuslugi, banks, Yandex/VK CDNs, etc. ~900 hosts.

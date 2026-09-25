@@ -1,34 +1,32 @@
 # ── Project metadata ──────────────────────────────────────────────────────────
-VERSION      := 1.16.7
-ARCH         ?= mipsel-3.4
+VERSION      := 1.17.0
+ARCH         ?= aarch64-3.10
 BUILD_DATE   := $(shell date -u +%Y-%m-%d)
 
-# ── Embedded sing-box ─────────────────────────────────────────────────────────
-# sing-box extended is embedded as a Go library (singbox_src/), including
-# XHTTP transport support without a separate daemon.
-SINGBOX_TAG  := v1.13.18-extended-2.6.5
-BUILD_TAGS   := with_utls
+# ── Embedded Xray ─────────────────────────────────────────────────────────
+# Xray v26.9.9 prerelease, pinned by commit in go.mod.
+XRAY_TAG  := v26.9.9+manager.1
 UPDATE_REPOSITORY ?= wad350/vless-manager
 
 # ── Go cross-compile target (Keenetic MT7621 = mipsle softfloat) ──────────────
 GOOS         ?= linux
-GOARCH       ?= mipsle
+GOARCH       ?= arm64
 GOMIPS       ?= softfloat
 CGO          ?= 0
-# Pin the toolchain required by the bundled extended source.
-GOTOOLCHAIN  := go1.26.4
+# Pin the toolchain required by the bundled Xray source.
+GOTOOLCHAIN  := go1.27.1
 export GOTOOLCHAIN
 LDFLAGS      := -s -w \
                 -X main.Version=$(VERSION) \
                 -X main.BuildDate=$(BUILD_DATE) \
-                -X main.BundledSingBox=$(SINGBOX_TAG) \
+                -X main.BundledXray=$(XRAY_TAG) \
                 -X main.UpdateRepository=$(UPDATE_REPOSITORY)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BUILD_DIR    := build
 
 # ── Router deploy (direct SCP) ────────────────────────────────────────────────
-ROUTER       ?= root@192.168.201.1
+ROUTER       ?= root@192.168.13.1
 PORT         ?= 222
 PASS         ?=
 
@@ -36,12 +34,12 @@ PASS         ?=
 
 all: manager ipk
 
-# ── vless-manager (with embedded sing-box) ────────────────────────────────────
+# ── vless-manager (with embedded Xray) ────────────────────────────────────
 
 manager:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=$(GOOS) GOARCH=$(GOARCH) GOMIPS=$(GOMIPS) CGO_ENABLED=$(CGO) \
-		go build -tags "$(BUILD_TAGS)" -trimpath -ldflags="$(LDFLAGS)" \
+		go build -trimpath -ldflags="$(LDFLAGS)" \
 		-o $(BUILD_DIR)/vless-manager ./cmd/vless-manager/
 	@echo "Built $(BUILD_DIR)/vless-manager $(VERSION) ($$(du -h $(BUILD_DIR)/vless-manager | cut -f1))"
 	@echo "NOTE: UPX segfaults on MT7621 — leaving uncompressed."
@@ -50,27 +48,7 @@ manager:
 
 ipk: manager
 	chmod +x packaging/build_ipk.sh
-	VERSION=$(VERSION) ARCH=$(ARCH) packaging/build_ipk.sh
-
-# OpenWrt IPK (mipsel_24kc). Doesn't bundle sing-box — depends on the
-# `sing-box` package in the OpenWrt repo. Result is ~3 MB instead of ~30 MB.
-ipk-openwrt: manager
-	chmod +x packaging/openwrt/build_ipk.sh
-	VERSION=$(VERSION) packaging/openwrt/build_ipk.sh
-
-# Push the OpenWrt IPK to the router (root@192.168.201.1 -p 22). Assumes
-# sing-box and the TPROXY kernel modules are already installed there.
-ROUTER_OPENWRT      ?= root@192.168.201.1
-PORT_OPENWRT        ?= 22
-PASS_OPENWRT        ?=
-install-ipk-openwrt:
-	sshpass -p '$(PASS_OPENWRT)' scp -O -o StrictHostKeyChecking=no \
-		-P $(PORT_OPENWRT) $(BUILD_DIR)/vless-manager_$(VERSION)_mipsel_24kc.ipk \
-		$(ROUTER_OPENWRT):/tmp/
-	sshpass -p '$(PASS_OPENWRT)' ssh -o StrictHostKeyChecking=no \
-		-p $(PORT_OPENWRT) $(ROUTER_OPENWRT) \
-		"opkg install --force-reinstall /tmp/vless-manager_$(VERSION)_mipsel_24kc.ipk && \
-		 rm /tmp/vless-manager_$(VERSION)_mipsel_24kc.ipk"
+	VERSION=$(VERSION) ARCH=$(ARCH) BUILD_DIR=$(BUILD_DIR) packaging/build_ipk.sh
 
 # ── Deploy (direct SCP, no opkg) ──────────────────────────────────────────────
 

@@ -48,11 +48,11 @@ type VLESSServer struct {
 	Xmux               json.RawMessage   `json:"xmux,omitempty"`
 	XHTTPHeaders       map[string]string `json:"xhttp_headers,omitempty"`
 	ScMaxBufferedPosts int64             `json:"sc_max_buffered_posts,omitempty"`
-	// DownloadSettings carries the xhttp "split" download branch (sing-box
+	// DownloadSettings carries the xhttp "split" download branch (Xray
 	// V2RayXHTTPDownloadOptions). Stored verbatim from share-link `extra`.
 	DownloadSettings json.RawMessage `json:"download_settings,omitempty"`
 	// Extra is the entire `extra={...}` blob from the share link, kept
-	// verbatim. singbox.go re-applies every recognised key into the xhttp
+	// verbatim. xray.go re-applies every recognised key into the xhttp
 	// transport at build time so newly introduced Xray fields (xPaddingKey,
 	// uplinkHTTPMethod=PUT, sc*Posts, custom xmux ranges, …) survive without
 	// us having to enumerate them by hand.
@@ -60,8 +60,8 @@ type VLESSServer struct {
 
 	// Members turns this catalog entry into a logical provider profile. Xray
 	// subscriptions commonly publish one profile backed by several VLESS
-	// outbounds and a least-load balancer. At runtime it maps to sing-box
-	// urltest; leaf entries keep this field empty.
+	// outbounds and a least-load balancer. At runtime it maps to Xray
+	// leastPing balancer; leaf entries keep this field empty.
 	Members []VLESSServer `json:"members,omitempty"`
 }
 
@@ -227,7 +227,7 @@ func pruneStaleServersWithActivePolicy(cfg *Config, subs []*Subscription, preser
 	return pruned
 }
 
-// pruneUnsupportedServers removes nodes that the bundled upstream sing-box
+// pruneUnsupportedServers removes nodes that the bundled upstream Xray
 // cannot instantiate. This also clears an incompatible active selection so
 // autostart/failover can choose from the supported set.
 func pruneUnsupportedServers(cfg *Config) int {

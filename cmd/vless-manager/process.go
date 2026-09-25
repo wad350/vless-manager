@@ -91,7 +91,7 @@ func newRingBuffer() *ringBuffer {
 }
 
 func (r *ringBuffer) write(line string) {
-	r.logEvent(serviceLogInfo, "sing-box", "runtime", line)
+	r.logEvent(serviceLogInfo, "xray", "runtime", line)
 }
 
 func (r *ringBuffer) setLevel(value string) {
@@ -130,7 +130,7 @@ func (r *ringBuffer) logEvent(level serviceLogLevel, component, event, message s
 	r.appendEventLocked(level, component, event, message, fields...)
 }
 
-// logEventUnfiltered is used for sing-box messages. The sing-box logger
+// logEventUnfiltered is used for Xray messages. The Xray logger
 // already applies its own independently configured level, so applying the
 // manager level again would make the two UI settings interfere.
 func (r *ringBuffer) logEventUnfiltered(level serviceLogLevel, component, event, message string, fields ...logField) {
@@ -238,12 +238,12 @@ type outboundTrafficSnapshot struct {
 	BypassUpload   uint64
 }
 
-// ProcessManager embeds sing-box as a library instead of running it as a
+// ProcessManager embeds Xray as a library instead of running it as a
 // separate process. This avoids a second runtime and keeps control, traffic
 // accounting and network-engine logs in the same process.
 type ProcessManager struct {
 	mu         sync.Mutex
-	box        boxHandle // interface so non-with_utls builds compile
+	box        engineHandle
 	logs       *ringBuffer
 	running    bool
 	startedAt  time.Time
@@ -301,16 +301,16 @@ func (pm *ProcessManager) Start(cfg *Config) error {
 		return fmt.Errorf("resolve active server: %w", err)
 	}
 
-	data, err := generateSingBoxConfig(cfg, dialServer)
+	data, err := generateXrayConfig(cfg, dialServer)
 	if err != nil {
-		return fmt.Errorf("generate sing-box config: %w", err)
+		return fmt.Errorf("generate Xray config: %w", err)
 	}
 
 	bh, err := startEmbedded(data, pm.logs)
 	if err != nil {
 		pm.lastErr = err.Error()
 		pm.event(serviceLogError, "manager", "vpn.runtime_start_failed",
-			"sing-box не запущен",
+			"Xray не запущен",
 			field("server", srv.Name),
 			field("error", err),
 			field("duration_ms", time.Since(started).Milliseconds()))
@@ -322,7 +322,7 @@ func (pm *ProcessManager) Start(cfg *Config) error {
 		closeErr := bh.Close()
 		pm.lastErr = err.Error()
 		pm.event(serviceLogError, "routing", "global.enable_failed",
-			"маршрутизация не включена, sing-box остановлен",
+			"маршрутизация не включена, Xray остановлен",
 			field("server_address", srv.Address),
 			field("error", err),
 			field("close_error", closeErr),
@@ -359,7 +359,7 @@ func (pm *ProcessManager) Stop() error {
 		pm.mu.Unlock()
 		return nil
 	}
-	pm.event(serviceLogInfo, "manager", "vpn.stop_requested", "остановка sing-box")
+	pm.event(serviceLogInfo, "manager", "vpn.stop_requested", "остановка Xray")
 	DisableGlobalRoute()
 	bh := pm.box
 	pm.box = nil
@@ -373,10 +373,10 @@ func (pm *ProcessManager) Stop() error {
 		pm.lastErr = err.Error()
 		pm.mu.Unlock()
 		pm.event(serviceLogError, "manager", "vpn.stop_failed",
-			"ошибка остановки sing-box", field("error", err))
+			"ошибка остановки Xray", field("error", err))
 		return err
 	} else {
-		pm.event(serviceLogInfo, "manager", "vpn.stopped", "sing-box остановлен")
+		pm.event(serviceLogInfo, "manager", "vpn.stopped", "Xray остановлен")
 	}
 	return nil
 }

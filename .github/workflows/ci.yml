@@ -23,14 +23,15 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version: '1.27.1'
           cache-dependency-path: |
             go.sum
-            singbox_src/go.sum
+            xray_src/go.sum
 
       - name: Test
         run: |
-          go test -tags with_utls ./...
+          go test ./...
+          (cd xray_src && go test ./common/buf ./transport/internet/grpc/... ./transport/internet)
           sh -n install.sh
           sh tests/install_test.sh
 

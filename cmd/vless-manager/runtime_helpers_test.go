@@ -290,7 +290,7 @@ func TestCancelledPingBatchDoesNotStartProbes(t *testing.T) {
 		Network: "tcp",
 	}
 	completed := 0
-	results := pingBatchViaSingBoxContext(ctx, []VLESSServer{server}, time.Second, "", 1, func(int, PingResult) {
+	results := pingBatchViaXrayContext(ctx, []VLESSServer{server}, time.Second, "", 1, func(int, PingResult) {
 		completed++
 	})
 	if completed != 0 {

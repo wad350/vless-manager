@@ -609,7 +609,7 @@ func (fc *failoverController) healthTick() {
 		field("health_interval_ms", st.HealthInterval().Milliseconds()))
 	if err := fc.stopFn(); err != nil {
 		fc.api.pm.event(serviceLogWarn, "failover", "swap.stop_failed",
-			"старый экземпляр sing-box остановлен с ошибкой",
+			"старый экземпляр Xray остановлен с ошибкой",
 			field("op_id", swapOpID),
 			field("error", err))
 	}
@@ -617,7 +617,7 @@ func (fc *failoverController) healthTick() {
 }
 
 // vpnProbe fetches url via the SOCKS5 health inbound (localhost:socksHealthPort)
-// that sing-box exposes alongside the redirect inbound. This verifies that the
+// that Xray exposes alongside the redirect inbound. This verifies that the
 // VLESS tunnel is actually working, independent of ip-rule routing.
 func vpnProbe(url string, timeout time.Duration) (bool, error) {
 	dialer, err := proxy.SOCKS5("tcp",

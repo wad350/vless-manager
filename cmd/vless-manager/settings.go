@@ -53,10 +53,10 @@ type AppSettings struct {
 	// --- Ping ---
 	PingTimeoutSec int    `json:"ping_timeout_sec"`
 	PingTestURL    string `json:"ping_test_url"`
-	// PingMaxParallel controls parallel temporary sing-box instances. 0 or 1
+	// PingMaxParallel controls parallel temporary Xray instances. 0 or 1
 	// is sequential; larger values are applied as configured.
 	PingMaxParallel    int `json:"ping_max_parallel"`
-	PingStartupSleepMS int `json:"ping_startup_sleep_ms"` // wait for SOCKS listener inside temp sing-box
+	PingStartupSleepMS int `json:"ping_startup_sleep_ms"` // wait for SOCKS listener inside temp Xray
 	// Selection mode is priority (lowest latency in the first subscription
 	// containing a working node) or fastest (lowest latency globally).
 	PingSelectionMode string `json:"ping_selection_mode"`
@@ -67,7 +67,7 @@ type AppSettings struct {
 	// Failover order: active_first|priority.
 	PingFailoverOrder string `json:"ping_failover_order"`
 
-	// --- sing-box ---
+	// --- Xray ---
 	LogLevel string `json:"log_level"` // error|warn|info|debug|trace
 	// ServiceLogLevel controls vless-manager's own operational log. At debug
 	// it includes every ping and subscription download attempt.
@@ -76,11 +76,11 @@ type AppSettings struct {
 	// --- Bypass routing ---
 	// BypassRouteRussia toggles the embedded ~900-entry RU operator whitelist
 	// (ya.ru, mail.ru, vk.ru, gosuslugi, Sberbank, Yandex/VK CDNs, etc.) as
-	// `domain_suffix` rules going to the `direct` outbound. sing-box uses
+	// suffix-domain rules going to the `direct` outbound. Xray uses
 	// sniff'd SNI/Host so the match happens before any VPN tunnel work.
 	BypassRouteRussia bool `json:"bypass_route_russia"`
 	// BypassDomains is the user-editable additional list. Each entry is a
-	// domain_suffix (so `example.com` matches `a.example.com` too). One
+	// domain suffix (so `example.com` matches `a.example.com` too). One
 	// domain per line in the UI textarea.
 	BypassDomains []string `json:"bypass_domains"`
 }
@@ -183,7 +183,7 @@ func (s AppSettings) validate() error {
 	if err := validateProbeURLs("whitelist_probes", s.WhitelistProbes); err != nil {
 		return err
 	}
-	if !oneOf(s.LogLevel, "panic", "fatal", "error", "warn", "info", "debug", "trace") {
+	if !oneOf(s.LogLevel, "none", "error", "warn", "info", "debug") {
 		return fmt.Errorf("invalid log_level %q", s.LogLevel)
 	}
 	if !oneOf(s.ServiceLogLevel, "error", "warn", "info", "debug", "trace") {
@@ -345,6 +345,12 @@ func (s *AppSettings) fillDefaults() bool {
 	}
 	if s.LogLevel == "" {
 		s.LogLevel = d.LogLevel
+		changed = true
+	} else if s.LogLevel == "panic" || s.LogLevel == "fatal" {
+		s.LogLevel = "none"
+		changed = true
+	} else if s.LogLevel == "trace" {
+		s.LogLevel = "debug"
 		changed = true
 	}
 	if s.ServiceLogLevel == "" {

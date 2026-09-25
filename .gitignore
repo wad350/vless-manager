@@ -6,20 +6,22 @@
 .gocache/
 .env
 .env.*
-singbox_src/.git.upstream/
+xray_src/.git.upstream/
 
 # Build outputs
-build/
+/build/
 /vless-manager
 /vless-manager-*
 
-# Obsolete experimental source tree; the build uses singbox_src.
+# Obsolete experimental source tree; the build uses xray_src.
+singbox_src/
 singbox_extended/
 
 # Runtime state and credentials
-data/
+/data/
 config.json
 subscriptions.json
 device-id
 *.log
 *.pid
+*.before-xray

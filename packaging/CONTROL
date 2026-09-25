@@ -1,5 +1,5 @@
 Package: vless-manager
-Version: 1.16.7
+Version: 1.17.0
 Architecture: mipsel-3.4
 Maintainer: local
-Description: VLESS proxy manager with WebUI for Keenetic routers. Embeds sing-box as a library and runs a TUN/system-stack transparent tunnel for LAN and router TCP/UDP traffic.
+Description: VLESS proxy manager with WebUI for Keenetic routers. Embeds Xray v26.9.9 with local fixes and runs a TUN transparent tunnel for LAN and router TCP/UDP traffic.

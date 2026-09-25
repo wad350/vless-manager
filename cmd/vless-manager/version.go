@@ -4,7 +4,7 @@ package main
 var (
 	Version          = "dev"
 	BuildDate        = "unknown"
-	BundledSingBox   = "unknown"
+	BundledXray      = "unknown"
 	UpdateRepository = "wad350/vless-manager"
 )
 
@@ -12,7 +12,7 @@ var (
 type BuildInfo struct {
 	Manager          string `json:"manager"`
 	BuildDate        string `json:"build_date"`
-	SingBox          string `json:"sing_box"`
+	Xray             string `json:"xray"`
 	UpdateRepository string `json:"update_repository"`
 }
 
@@ -20,7 +20,7 @@ func buildInfo() BuildInfo {
 	return BuildInfo{
 		Manager:          Version,
 		BuildDate:        BuildDate,
-		SingBox:          BundledSingBox,
+		Xray:             BundledXray,
 		UpdateRepository: UpdateRepository,
 	}
 }
