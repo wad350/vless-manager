@@ -2,6 +2,14 @@
 
 export PATH=/opt/sbin:/opt/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Use the tested low-memory Go profile on MIPS; leave ARM64 defaults unchanged.
+case "$(uname -m)" in
+    mips*)
+        export GOMEMLIMIT="${GOMEMLIMIT:-32MiB}"
+        export GOGC="${GOGC:-50}"
+        ;;
+esac
+
 BIN=/opt/bin/vless-manager
 DATA_DIR=/opt/etc/vless-manager
 PID_FILE=/opt/var/run/vless-manager.pid
