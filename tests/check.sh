@@ -4,6 +4,14 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
+dependencies=$(go list -deps ./cmd/vless-manager)
+case "$dependencies" in
+    *gvisor.dev/gvisor/*)
+        echo "Default manager build must not link gVisor" >&2
+        exit 1
+        ;;
+esac
+
 go test -race -short -count=1 -timeout=120s ./cmd/vless-manager ./packaging/mipscrypto
 (
     cd xray_src

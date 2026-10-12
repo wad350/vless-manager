@@ -16,10 +16,11 @@ case "$(uname -m)" in
                 if (mt7621 && logical == 4 && physical == 2) print 2
             }
         ' /proc/cpuinfo 2>/dev/null)
-        # The bounded MIPS32r2 ChaCha backend is tested on native MT7621 TPROXY.
-        # Its own ISA check still falls back to Go on unsupported processors.
+        # Bounded MIPS32r2 crypto backends are tested on native MT7621 TPROXY.
+        # Their own ISA checks still fall back to Go on unsupported processors.
         if [ "$CPU_LIMIT" = "2" ]; then
             export VLESS_MANAGER_MIPS_CHACHA20="${VLESS_MANAGER_MIPS_CHACHA20:-auto}"
+            export VLESS_MANAGER_MIPS_POLY1305="${VLESS_MANAGER_MIPS_POLY1305:-auto}"
             # Four VPEs share two physical cores; retain the measured Go limit.
             export GOMAXPROCS="${GOMAXPROCS:-2}"
         else

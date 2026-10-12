@@ -17,7 +17,7 @@ import (
 	"strings"
 )
 
-const cryptoVersion = "v0.55.0"
+const cryptoVersion = "v0.57.0"
 
 var upstreamHashes = map[string]string{
 	"chacha20/chacha_generic.go":       "34403e82b1387b4402b00ce30c1364508c333f4bdbe671321690c6ebaa8d3180",
@@ -45,7 +45,11 @@ func run(out string, generate bool) error {
 		if err := os.WriteFile(filepath.Join(overlay, "chacha_mipsle.s"), []byte(assemblySource()), 0644); err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(root, "packaging", "mipscrypto", "_poly1305", "products_mipsle.s"), []byte(productsAssemblySource()), 0644)
+		poly := filepath.Join(root, "packaging", "mipscrypto", "_poly1305")
+		if err := os.WriteFile(filepath.Join(poly, "products_mipsle.s"), []byte(productsAssemblySource()), 0644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(poly, "blocks_mipsle.s"), []byte(polyBlocksAssemblySource()), 0644)
 	}
 	output, err := exec.Command("go", "list", "-m", "-json", "golang.org/x/crypto").Output()
 	if err != nil {
@@ -121,7 +125,7 @@ func run(out string, generate bool) error {
 	return nil
 }
 
-// Retain the upstream algorithm and specialize only its 64x64 multiplication.
+// Retain upstream state/finalization and the old product variant for A/B tests.
 func stagePoly1305(dst, overlay string) error {
 	path := filepath.Join(dst, "sum_generic.go")
 	source, err := os.ReadFile(path)
@@ -159,7 +163,7 @@ func stagePoly1305(dst, overlay string) error {
 		if !ok || fn.Name.Name != "updateGeneric" {
 			continue
 		}
-		fn.Name.Name = "updateMIPS"
+		fn.Name.Name = "updateProductsMIPS"
 		if err := fusePolyProducts(fn); err != nil {
 			return err
 		}

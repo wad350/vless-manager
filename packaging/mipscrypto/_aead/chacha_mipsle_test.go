@@ -5,6 +5,7 @@ package chacha20poly1305
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"runtime"
 	"sync"
 	"testing"
@@ -49,17 +50,27 @@ func TestMIPSAEADConcurrent(t *testing.T) {
 }
 
 func BenchmarkMIPSAEADParallel(b *testing.B) {
+	benchmarkMIPSAEAD(b, 16384)
+}
+
+func BenchmarkMIPSAEADSizes(b *testing.B) {
+	for _, n := range []int{64, 1200, 16384} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) { benchmarkMIPSAEAD(b, n) })
+	}
+}
+
+func benchmarkMIPSAEAD(b *testing.B, n int) {
 	for _, operation := range []string{"seal", "open"} {
 		b.Run(operation, func(b *testing.B) {
-			b.SetBytes(16384)
+			b.SetBytes(int64(n))
 			b.ReportAllocs()
 			b.RunParallel(func(pb *testing.PB) {
 				var key [KeySize]byte
 				aead, _ := New(key[:])
 				var nonce [NonceSize]byte
-				plaintext := make([]byte, 16384)
+				plaintext := make([]byte, n)
 				ciphertext := aead.Seal(nil, nonce[:], plaintext, nil)
-				out := make([]byte, 0, 16384+Overhead)
+				out := make([]byte, 0, n+Overhead)
 				counter := uint64(0)
 				for pb.Next() {
 					if operation == "seal" {

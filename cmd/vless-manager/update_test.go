@@ -18,6 +18,41 @@ import (
 	"time"
 )
 
+func TestBuiltReleasePackages(t *testing.T) {
+	dir, version := os.Getenv("VLESS_MANAGER_RELEASE_DIR"), os.Getenv("VLESS_MANAGER_RELEASE_VERSION")
+	if dir == "" && version == "" {
+		t.Skip("set release directory and version to validate built assets")
+	}
+	if dir == "" || version == "" {
+		t.Fatal("release directory and version must both be set")
+	}
+	if _, err := normalizedVersion(version); err != nil {
+		t.Fatal(err)
+	}
+	otherVersion := "0.0.0"
+	if version == otherVersion {
+		otherVersion = "0.0.1"
+	}
+	for _, arch := range []string{"mipsel-3.4", "aarch64-3.10"} {
+		t.Run(arch, func(t *testing.T) {
+			path := filepath.Join(dir, fmt.Sprintf("vless-manager_%s_%s.ipk", version, arch))
+			if err := validateIPK(path, version, arch); err != nil {
+				t.Fatal(err)
+			}
+			otherArch := "mipsel-3.4"
+			if arch == otherArch {
+				otherArch = "aarch64-3.10"
+			}
+			if err := validateIPK(path, version, otherArch); err == nil {
+				t.Fatal("wrong architecture accepted")
+			}
+			if err := validateIPK(path, otherVersion, arch); err == nil {
+				t.Fatal("wrong version accepted")
+			}
+		})
+	}
+}
+
 func TestVersionComparison(t *testing.T) {
 	tests := []struct {
 		candidate string

@@ -20,7 +20,7 @@ func TestAssemblyIsCurrent(t *testing.T) {
 	if string(got) != assemblySource() {
 		t.Fatal("regenerate assembly with go run ./packaging/mipscrypto -generate from repository root")
 	}
-	for _, forbidden := range []string{"CALL", "R22", "R23", "R30", "F0"} {
+	for _, forbidden := range []string{"CALL", "R22", "R23", "R26", "R27", "R30", "F0"} {
 		for _, line := range strings.Split(string(got), "\n") {
 			if !strings.HasPrefix(line, "//") && strings.Contains(line, forbidden) {
 				t.Fatalf("reserved register, floating point or call in assembly: %s", line)
@@ -34,6 +34,23 @@ func TestPolyAssemblyIsCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	blocks, err := os.ReadFile(filepath.Join("_poly1305", "blocks_mipsle.s"))
+	if err != nil || string(blocks) != polyBlocksAssemblySource() {
+		t.Fatal("regenerate block Poly1305 assembly", err)
+	}
+	for _, line := range strings.Split(string(blocks), "\n") {
+		if strings.HasPrefix(line, "//") {
+			continue
+		}
+		for _, forbidden := range []string{"CALL", "R22", "R23", "R26", "R27", "R30", "F0"} {
+			if strings.Contains(line, forbidden) {
+				t.Fatalf("reserved register, floating point or call: %s", line)
+			}
+		}
+		if (strings.Contains(line, "BEQ") || strings.Contains(line, "BNE")) && !strings.Contains(line, "R2,") {
+			t.Fatalf("branch not controlled by public block count: %s", line)
+		}
+	}
 	if string(got) != productsAssemblySource() {
 		t.Fatal("regenerate fused Poly1305 assembly")
 	}
@@ -46,7 +63,7 @@ func TestPolyAssemblyIsCurrent(t *testing.T) {
 			if strings.HasPrefix(line, "//") {
 				continue
 			}
-			for _, forbidden := range []string{"CALL", "R22", "R23", "R30", "F0", "BEQ", "BNE"} {
+			for _, forbidden := range []string{"CALL", "R22", "R23", "R26", "R27", "R30", "F0", "BEQ", "BNE"} {
 				if strings.Contains(line, forbidden) {
 					t.Fatalf("reserved register, floating point, call or branch: %s", line)
 				}

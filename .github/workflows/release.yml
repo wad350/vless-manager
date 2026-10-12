@@ -18,7 +18,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.2'
           cache-dependency-path: |
             go.sum
             xray_src/go.sum
@@ -43,9 +43,18 @@ jobs:
           mkdir -p dist
           make clean
           make ipk VERSION="$VERSION" ARCH=mipsel-3.4 GOARCH=mipsle GOMIPS=softfloat
+          # Keep symbols in audit copies so unused module packages are not
+          # reported as linked code; release IPKs remain stripped.
+          GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 \
+            go build -modfile=build/mips-crypto/crypto.mod -trimpath -o "$RUNNER_TEMP/manager-audit" ./cmd/vless-manager
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary "$RUNNER_TEMP/manager-audit"
           cp "build/vless-manager_${VERSION}_mipsel-3.4.ipk" dist/
           make clean
           make ipk VERSION="$VERSION" ARCH=aarch64-3.10 GOARCH=arm64 GOMIPS=
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+            go build -trimpath -o "$RUNNER_TEMP/manager-audit" ./cmd/vless-manager
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary "$RUNNER_TEMP/manager-audit"
+          rm "$RUNNER_TEMP/manager-audit"
           cp "build/vless-manager_${VERSION}_aarch64-3.10.ipk" dist/
           (
             cd dist
@@ -55,11 +64,23 @@ jobs:
             sha256sum *.ipk > checksums.txt
           )
 
+      - name: Check release vulnerabilities
+        shell: bash
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./cmd/vless-manager
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          VLESS_MANAGER_RELEASE_DIR="$PWD/dist" VLESS_MANAGER_RELEASE_VERSION="$VERSION" \
+            go test -count=1 -run '^TestBuiltReleasePackages$' ./cmd/vless-manager
+          if [[ -f "docs/releases/$GITHUB_REF_NAME.md" ]]; then
+            notes=(--notes-file "docs/releases/$GITHUB_REF_NAME.md")
+          else
+            notes=(--generate-notes)
+          fi
           gh release create "$GITHUB_REF_NAME" dist/* \
             --verify-tag \
-            --generate-notes \
+            "${notes[@]}" \
             --title "VLESS Manager $GITHUB_REF_NAME"

@@ -200,6 +200,9 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
 	if err != nil {
 		return nil, errors.New("failed to build inbound handler for protocol ", c.Protocol).Base(err)
 	}
+	if !strings.EqualFold(c.Protocol, "masque") && receiverSettings.StreamSettings != nil && receiverSettings.StreamSettings.ProtocolName == "masque" {
+		return nil, errors.New("the masque transport can only be used by the masque inbound")
+	}
 
 	return &core.InboundHandlerConfig{
 		Tag:              c.Tag,
@@ -333,6 +336,14 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 	}
 	if err := validateOutboundTransportSecurity(rawConfig, senderSettings); err != nil {
 		return nil, err
+	}
+
+	if strings.EqualFold(c.Protocol, "masque") {
+		if ms := senderSettings.MultiplexSettings; ms != nil && ms.Enabled {
+			return nil, errors.New(`masque outbound does not support "mux"`)
+		}
+	} else if senderSettings.StreamSettings != nil && senderSettings.StreamSettings.ProtocolName == "masque" {
+		return nil, errors.New("the masque transport can only be used by the masque outbound")
 	}
 
 	if fc, ok := ts.(*freedom.Config); ok {

@@ -1,9 +1,9 @@
 # Embedded Runtime Patches
 
 Upstream: https://github.com/XTLS/Xray-core
-Tag: v26.9.9 (prerelease)
-Commit: 52a412d9e2f5c2a5142b1b4e2ab3771dacb8b120
-Go module: v1.260327.1-0.20260908222543-52a412d9e2f5
+Tag: v26.10.10 (prerelease)
+Commit: 701af60772cda123492f86e383e1fdba066614a9
+Go module: v1.260327.1-0.20261010092107-701af60772cd
 
 This is the upstream module source with local fixes, not an unmodified
 official Xray build. Keep the upstream LICENSE and these changes when updating.
@@ -146,3 +146,12 @@ including route accounting, live in the manager.
     retain the previous snapshot without cloning every row per connection.
     Snapshot ownership and concurrent marshal/update tests cover the race
     detected by real grouped-profile traffic under `-race`.
+27. MASQUE config registration requires `xray_masque`, like optional TUN and
+    WireGuard. Its new proxy imports the WireGuard netstack; the manager does
+    not offer MASQUE and must remain gVisor-free. Transport validation keeps
+    upstream semantics without importing the optional proxy package. Tagged
+    builds retain the upstream parser and its tests.
+28. Raise the build toolchain to Go 1.27.2, `golang.org/x/net` to 0.60.0,
+    and `github.com/klauspost/compress` to 1.18.7 for their published security
+    fixes. The release audit scans both the manager source and final MIPSLE
+    and ARM64 binaries, then repeats the runtime and package tests.

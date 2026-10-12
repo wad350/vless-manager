@@ -144,6 +144,54 @@ func TestAuthMiddlewareAndLogin(t *testing.T) {
 	}
 }
 
+func TestAuthLogoutRevokesOnlyCurrentSession(t *testing.T) {
+	api := newHandlerTestAPI(t)
+	api.cfg.Settings.AuthEnabled = true
+	api.auth = newAuthService(fakeCredentialAuthenticator{})
+	first, _, err := api.auth.createSession("admin", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := api.auth.createSession("admin", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(method, path, token string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, nil)
+		if token != "" {
+			req.AddCookie(&http.Cookie{Name: authCookieName, Value: token})
+		}
+		rec := httptest.NewRecorder()
+		api.ServeHTTP(rec, req)
+		return rec
+	}
+	if got := request(http.MethodGet, "/api/auth/logout", first); got.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET logout status=%d", got.Code)
+	}
+	if got := request(http.MethodGet, "/api/status", first); got.Code != http.StatusOK {
+		t.Fatalf("GET logout invalidated session: status=%d", got.Code)
+	}
+	logout := request(http.MethodPost, "/api/auth/logout", first)
+	if logout.Code != http.StatusOK {
+		t.Fatalf("logout status=%d body=%s", logout.Code, logout.Body.String())
+	}
+	cookies := logout.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != authCookieName || cookies[0].Value != "" || cookies[0].MaxAge != -1 ||
+		!cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode || cookies[0].Path != "/" {
+		t.Fatalf("logout cookie=%+v", cookies)
+	}
+	if got := request(http.MethodGet, "/api/status", first); got.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked token accepted: status=%d", got.Code)
+	}
+	if got := request(http.MethodGet, "/api/status", other); got.Code != http.StatusOK {
+		t.Fatalf("other session invalidated: status=%d", got.Code)
+	}
+	if got := request(http.MethodPost, "/api/auth/logout", ""); got.Code != http.StatusOK {
+		t.Fatalf("logout without cookie status=%d", got.Code)
+	}
+}
+
 func TestAuthLoginRejectsInvalidCredentials(t *testing.T) {
 	api := newHandlerTestAPI(t)
 	api.cfg.Settings.AuthEnabled = true
