@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -13,16 +12,19 @@ var lanIfaces = []string{"br0", "br-lan"}
 var tunnelProtocols = []string{"tcp", "udp"}
 
 const (
-	// vlessMangleChain holds per-destination bypass rules and the final
-	// MARK action that sends LAN and local OUTPUT traffic into tun0.
 	vlessMangleChain = "VLESS_TPROXY"
-	// collisions with WANFwmark (0x9911).
-	tunFwmark  = 0x1
-	tunRtTable = "100"
-
-	// WANFwmark is set on sockets by wanDialer (health.go).
-	WANFwmark = 0x9911
+	vlessOutputChain = "VLESS_OUTPUT"
+	vlessInputChain  = "VLESS_IN"
+	vlessTCPChain    = "VLESS_TCP"    // Legacy REDIRECT cleanup.
+	vlessTCPInput    = "VLESS_TCP_IN" // Legacy REDIRECT cleanup.
+	tunFwmark        = 0x1
+	tunRtTable       = "100"
+	WANFwmark        = 0x9911
 )
+
+type routeMode string
+
+const routeTPROXY routeMode = "tproxy"
 
 func chooseLanIface() string {
 	for _, iface := range lanIfaces {
@@ -33,23 +35,42 @@ func chooseLanIface() string {
 	return lanIfaces[0]
 }
 
-// privateCIDRs — never route through the tunnel.
+// Local, multicast and broadcast destinations never enter the proxy.
 var privateCIDRs = []string{
-	"192.168.0.0/16",
-	"10.0.0.0/8",
-	"172.16.0.0/12",
-	"127.0.0.0/8",
-	"169.254.0.0/16",
-	"224.0.0.0/4",
+	"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8",
+	"169.254.0.0/16", "224.0.0.0/4", "255.255.255.255/32", "0.0.0.0/8",
 }
 
-// AddPingBypass / ClearPingBypasses are no-ops in the current design: the
-// router's own outbound traffic is handled in OUTPUT, not PREROUTING, and
-// health probes bypass the tunnel by setting a socket mark.
-func AddPingBypass(_ string) {}
-func ClearPingBypasses()     {}
+// Keenetic may lack xt_addrtype. Exclude its public interface addresses
+// explicitly; private addresses are already covered by privateCIDRs.
+func localIPv4Addresses() ([]string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	seen := make(map[string]bool)
+	for _, addr := range addrs {
+		ip, _, err := net.ParseCIDR(addr.String())
+		if err != nil || ip.To4() == nil {
+			continue
+		}
+		private := false
+		for _, cidr := range privateCIDRs {
+			_, network, _ := net.ParseCIDR(cidr)
+			if network.Contains(ip) {
+				private = true
+				break
+			}
+		}
+		if value := ip.To4().String(); !private && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result, nil
+}
 
-// ResolveAddrs returns IPv4 addresses for host. 3-second timeout.
 func ResolveAddrs(host string) []string {
 	if ip := net.ParseIP(host); ip != nil {
 		if ip4 := ip.To4(); ip4 != nil {
@@ -72,180 +93,138 @@ func ResolveAddrs(host string) []string {
 	return out
 }
 
-// keeneticUpstreamDNSServers returns the IPv4 resolvers currently selected by
-// Keenetic. ndnproxy sends its upstream requests to these addresses, so they
-// must stay on WAN; routing them back into VLESS makes uncached DNS lookups
-// depend on the tunnel being able to reach an operator-local resolver.
+// Only DNS/53 to the router's actual upstreams is exempted, not DoH/HTTPS.
 func keeneticUpstreamDNSServers(command func(string, ...string) (string, error)) []string {
 	output, err := command("ndmc", "-c", "show ip name-server")
 	if err != nil {
 		return nil
 	}
-
-	seen := make(map[string]struct{})
-	servers := make([]string, 0, 2)
+	seen := make(map[string]bool)
+	var servers []string
 	for _, line := range strings.Split(output, "\n") {
 		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
 		if !ok || strings.TrimSpace(key) != "address" {
 			continue
 		}
-		ip := net.ParseIP(strings.TrimSpace(value))
-		if ip == nil || ip.To4() == nil {
-			continue
+		if ip := net.ParseIP(strings.TrimSpace(value)); ip != nil && ip.To4() != nil {
+			address := ip.To4().String()
+			if !seen[address] {
+				seen[address] = true
+				servers = append(servers, address)
+			}
 		}
-		address := ip.To4().String()
-		if _, exists := seen[address]; exists {
-			continue
-		}
-		seen[address] = struct{}{}
-		servers = append(servers, address)
 	}
 	return servers
 }
 
-// waitForTun polls until tun0 appears (Xray creates it on Start) or
-// the deadline passes. Returns an error if the interface never shows up.
-func waitForTun(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if ifaces, err := net.Interfaces(); err == nil {
-			for _, iface := range ifaces {
-				if iface.Name == tunIface {
-					return nil
-				}
+// Probe an unattached chain. Keenetic ships modules but does not always
+// autoload them; never change live hooks just to detect support.
+func ensureTProxySupport(command func(string, ...string) (string, error)) error {
+	const probe = "VLESS_PROBE"
+	command("iptables", "-t", "mangle", "-F", probe)
+	command("iptables", "-t", "mangle", "-X", probe)
+	if output, err := command("iptables", "-t", "mangle", "-N", probe); err != nil {
+		return fmt.Errorf("create TPROXY probe: %w (%s)", err, output)
+	}
+	defer command("iptables", "-t", "mangle", "-X", probe)
+	defer command("iptables", "-t", "mangle", "-F", probe)
+	for _, protocol := range tunnelProtocols {
+		args := []string{"-t", "mangle", "-A", probe, "-p", protocol, "-j", "TPROXY", "--on-port", fmt.Sprint(tcpRedirectPort), "--tproxy-mark", "0x1/0xffffffff"}
+		if _, err := command("iptables", args...); err == nil {
+			continue
+		}
+		command("modprobe", "xt_TPROXY")
+		if release, err := command("uname", "-r"); err == nil {
+			release = strings.TrimSpace(release)
+			if release != "" && !strings.ContainsAny(release, "/\\\n\r") {
+				command("insmod", "/lib/modules/"+release+"/xt_TPROXY.ko")
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		if output, err := command("iptables", args...); err != nil {
+			return fmt.Errorf("kernel TPROXY %s: %w (%s)", protocol, err, output)
+		}
 	}
-	return fmt.Errorf("tun interface %s did not appear within %v", tunIface, timeout)
+	return nil
 }
 
-// EnableGlobalRoute routes all non-local traffic from LAN and local
-// router processes through tun0:
-//
-//  1. VLESS_TPROXY mangle chain: RETURN private CIDRs, Keenetic's upstream
-//     DNS on port 53 and the VLESS server IP; MARK every other packet.
-//  2. ip rule: fwmark 0x1 → table 100 → default dev tun0.
-//     ip rule: fwmark 0x9911 → main → WAN (health/socket bypass).
-//  3. iptables FORWARD: br0 ↔ tun0 ACCEPT (Keenetic default is DROP).
-//
-// Xray's TUN stack handles TCP/UDP. ICMP and other IP protocols keep the
-// router's normal WAN route because the mangle chain only marks TCP/UDP.
 func EnableGlobalRoute(vlessHost string) error {
+	serverAddrs := ResolveAddrs(vlessHost)
+	if len(serverAddrs) == 0 {
+		return fmt.Errorf("resolve VPN server %q: no IPv4 addresses", vlessHost)
+	}
+	localIPs, err := localIPv4Addresses()
+	if err != nil {
+		return fmt.Errorf("read local IPv4 addresses: %w", err)
+	}
 	DisableGlobalRoute()
-	applied := false
-	defer func() {
-		if !applied {
-			DisableGlobalRoute()
+	plan := globalRouteCommands(chooseLanIface(), keeneticUpstreamDNSServers(run), serverAddrs, localIPs)
+	return installGlobalRoute(plan, run, DisableGlobalRoute)
+}
+
+// TCP and UDP use the native kernel stack. OUTPUT marks router traffic for
+// loopback delivery; PREROUTING hands LAN and loopback packets to Xray.
+func globalRouteCommands(lanIface string, dnsServers, endpointIPs, localIPs []string) [][]string {
+	plan := [][]string{
+		{"ip", "rule", "add", "fwmark", "0x1", "lookup", tunRtTable, "pref", "1"},
+		{"ip", "rule", "add", "fwmark", "0x9911", "lookup", "main", "pref", "2"},
+		{"ip", "route", "add", "local", "0.0.0.0/0", "dev", "lo", "table", tunRtTable},
+	}
+	add := func(args ...string) { plan = append(plan, args) }
+	for _, chain := range []string{vlessMangleChain, vlessOutputChain} {
+		add("iptables", "-t", "mangle", "-N", chain)
+		add("iptables", "-t", "mangle", "-A", chain, "-m", "mark", "--mark", "0x9911", "-j", "RETURN")
+		for _, cidr := range privateCIDRs {
+			add("iptables", "-t", "mangle", "-A", chain, "-d", cidr, "-j", "RETURN")
 		}
-	}()
-
-	// Wait for Xray to bring up tun0 before we reference it in ip route.
-	if err := waitForTun(10 * time.Second); err != nil {
-		return fmt.Errorf("waiting for %s: %v", tunIface, err)
-	}
-
-	markExact := fmt.Sprintf("0x%x", tunFwmark)
-	mark := fmt.Sprintf("0x%x/0xffffffff", tunFwmark)
-	wanMarkExact := fmt.Sprintf("0x%x", WANFwmark)
-
-	// ip rule + route: fwmark'd packets → table 100 → tun0.
-	if err := requireRouteCommand("add tunnel policy rule", "ip", "rule", "add", "fwmark", markExact, "lookup", tunRtTable, "pref", "1"); err != nil {
-		return err
-	}
-	if err := requireRouteCommand("add WAN bypass rule", "ip", "rule", "add", "fwmark", wanMarkExact, "lookup", "main", "pref", "2"); err != nil {
-		return err
-	}
-	if err := requireRouteCommand("add tunnel route", "ip", "route", "add", "table", tunRtTable, "default", "dev", tunIface); err != nil {
-		return err
-	}
-
-	// VLESS_TPROXY chain: bypass rules then MARK.
-	if err := requireRouteCommand("create mangle chain", "iptables", "-t", "mangle", "-N", vlessMangleChain); err != nil {
-		return err
-	}
-
-	for _, cidr := range privateCIDRs {
-		if err := requireRouteCommand("add private network bypass", "iptables", "-t", "mangle", "-A", vlessMangleChain, "-d", cidr, "-j", "RETURN"); err != nil {
-			return err
+		for _, ip := range append(append([]string{}, endpointIPs...), localIPs...) {
+			add("iptables", "-t", "mangle", "-A", chain, "-d", ip+"/32", "-j", "RETURN")
 		}
-	}
-	if err := requireRouteCommand("add marked socket bypass", "iptables", "-t", "mangle", "-A", vlessMangleChain, "-m", "mark", "--mark", wanMarkExact, "-j", "RETURN"); err != nil {
-		return err
-	}
-
-	// Client DNS addressed to this router already matches a private CIDR. Keep
-	// ndnproxy's current upstream resolvers on WAN as well; otherwise operator
-	// DNS is sent into VLESS and uncached names intermittently stop resolving.
-	for _, ip := range keeneticUpstreamDNSServers(run) {
-		for _, protocol := range []string{"udp", "tcp"} {
-			if err := requireRouteCommand("add Keenetic DNS bypass", "iptables", "-t", "mangle", "-A", vlessMangleChain,
-				"-d", ip+"/32", "-p", protocol, "--dport", "53", "-j", "RETURN"); err != nil {
-				return err
+		for _, ip := range dnsServers {
+			for _, protocol := range tunnelProtocols {
+				add("iptables", "-t", "mangle", "-A", chain, "-d", ip+"/32", "-p", protocol, "--dport", "53", "-j", "RETURN")
+			}
+		}
+		for _, protocol := range tunnelProtocols {
+			if chain == vlessMangleChain {
+				add("iptables", "-t", "mangle", "-A", chain, "-p", protocol, "-j", "TPROXY", "--on-port", fmt.Sprint(tcpRedirectPort), "--on-ip", "127.0.0.1", "--tproxy-mark", "0x1/0xffffffff")
+			} else {
+				add("iptables", "-t", "mangle", "-A", chain, "-p", protocol, "-j", "MARK", "--set-mark", "0x1/0xffffffff")
 			}
 		}
 	}
-
-	// VLESS server — must not enter tun0 or we get a routing loop.
-	serverAddrs := ResolveAddrs(vlessHost)
-	if len(serverAddrs) == 0 {
-		return fmt.Errorf("resolve VLESS server %q: no IPv4 addresses", vlessHost)
+	// Keenetic's mangle INPUT inspects port 443 as its own HTTPS console and
+	// drops proxied TLS after the handshake. Only our captured LAN/lo packets
+	// must bypass that inspection; filter INPUT still protects the listener.
+	add("iptables", "-t", "mangle", "-N", vlessInputChain)
+	for _, iface := range []string{lanIface, "lo"} {
+		add("iptables", "-t", "mangle", "-A", vlessInputChain, "-i", iface, "-m", "mark", "--mark", "0x1", "-j", "ACCEPT")
 	}
-	for _, ip := range serverAddrs {
-		if err := requireRouteCommand("add VLESS endpoint bypass", "iptables", "-t", "mangle", "-A", vlessMangleChain, "-d", ip+"/32", "-j", "RETURN"); err != nil {
-			return err
-		}
+	add("iptables", "-t", "mangle", "-A", vlessInputChain, "-j", "RETURN")
+	add("iptables", "-N", vlessInputChain)
+	for _, iface := range []string{lanIface, "lo"} {
+		add("iptables", "-A", vlessInputChain, "-i", iface, "-m", "mark", "--mark", "0x1", "-j", "ACCEPT")
 	}
-
-	// VLESS carries TCP and UDP only. Leave ICMP and other IP protocols in
-	// the kernel's direct route instead of feeding unsupported packets to TUN.
+	// The listener is not a publicly accessible forward proxy. Intercepted
+	// packets retain their original destination/port and carry our mark.
 	for _, protocol := range tunnelProtocols {
-		if err := requireRouteCommand("add tunnel mark", "iptables", "-t", "mangle", "-A", vlessMangleChain, "-p", protocol, "-j", "MARK", "--set-mark", mark); err != nil {
-			return err
+		add("iptables", "-A", vlessInputChain, "-p", protocol, "--dport", fmt.Sprint(tcpRedirectPort), "-j", "DROP")
+	}
+	add("iptables", "-A", vlessInputChain, "-j", "RETURN")
+	add("iptables", "-I", "INPUT", "1", "-j", vlessInputChain)
+	add("iptables", "-t", "mangle", "-I", "INPUT", "1", "-j", vlessInputChain)
+	add("iptables", "-t", "mangle", "-I", "PREROUTING", "1", "-i", "lo", "-j", vlessMangleChain)
+	add("iptables", "-t", "mangle", "-I", "PREROUTING", "1", "-i", lanIface, "-j", vlessMangleChain)
+	add("iptables", "-t", "mangle", "-I", "OUTPUT", "1", "-j", vlessOutputChain)
+	return plan
+}
+
+func installGlobalRoute(plan [][]string, command func(string, ...string) (string, error), cleanup func()) error {
+	for _, args := range plan {
+		if output, err := command(args[0], args[1:]...); err != nil {
+			cleanup()
+			return fmt.Errorf("install route %s: %w (%s)", strings.Join(args, " "), err, output)
 		}
 	}
-
-	lanIface := chooseLanIface()
-	// Apply chain to traffic arriving on the LAN bridge.
-	if err := requireRouteCommand("attach LAN prerouting chain", "iptables", "-t", "mangle", "-A", "PREROUTING",
-		"-i", lanIface, "-j", vlessMangleChain); err != nil {
-		return err
-	}
-	if err := requireRouteCommand("attach router output chain", "iptables", "-t", "mangle", "-A", "OUTPUT", "-j", vlessMangleChain); err != nil {
-		return err
-	}
-
-	// INPUT chain: Keenetic defaults to DROP. The system stack rewrites client
-	// TCP/UDP packets (src=LAN_IP, dst=external) into (src=198.18.0.2,
-	// dst=198.18.0.1:listener_port) and writes them back to tun0. The kernel
-	// then delivers them via INPUT to Xray's local TCP listener. Without
-	// this rule those rewritten packets are silently dropped (INPUT policy
-	// DROP), so the system stack's TCP listener never receives connections.
-	if err := requireRouteCommand("allow tunnel input", "iptables", "-I", "INPUT", "1", "-i", tunIface, "-j", "ACCEPT"); err != nil {
-		return err
-	}
-
-	// FORWARD chain: Keenetic defaults to DROP; allow LAN ↔ tun0 traffic.
-	// br0/br-lan → tun0: LAN client packets going into Xray.
-	// tun0 → (any): Xray reply packets going back to LAN clients.
-	if err := requireRouteCommand("allow LAN tunnel forwarding", "iptables", "-A", "FORWARD", "-i", lanIface, "-o", tunIface, "-j", "ACCEPT"); err != nil {
-		return err
-	}
-	if err := requireRouteCommand("allow tunnel return forwarding", "iptables", "-A", "FORWARD", "-i", tunIface, "-j", "ACCEPT"); err != nil {
-		return err
-	}
-
-	// POSTROUTING nat: Keenetic's _NDM_MASQ rule automatically masquerades
-	// all LAN (192.168.201.x) traffic exiting on any non-br0 interface,
-	// including tun0. Without this bypass, the source IP gets rewritten to
-	// 198.18.0.1 (tun0 address) before Xray reads the packet — so the
-	// system-stack reply goes back to the router, not to the LAN client.
-	// Insert at position 1 so it fires before _NDM_IPSEC / _NDM_MASQ.
-	if err := requireRouteCommand("add tunnel NAT bypass", "iptables", "-t", "nat", "-I", "POSTROUTING", "1", "-o", tunIface, "-j", "RETURN"); err != nil {
-		return err
-	}
-
-	applied = true
 	return nil
 }
 
@@ -257,53 +236,87 @@ func requireRouteCommand(stage, name string, args ...string) error {
 	return nil
 }
 
-// GlobalRouteReady verifies the state most commonly removed by a Keenetic
-// firewall reload. The endpoint bypass and mark rules live in the same custom
-// chain, so an existing chain plus both attachment points and the policy route
-// are sufficient for the lightweight periodic guard.
-func GlobalRouteReady() bool {
-	return globalRouteReady(run)
-}
+func GlobalRouteReady() bool { return globalRouteReady(run) }
 
+// Four command snapshots instead of dozens of iptables forks on small MIPS.
 func globalRouteReady(command func(string, ...string) (string, error)) bool {
-	if _, err := command("iptables", "-t", "mangle", "-S", vlessMangleChain); err != nil {
+	mangle, err := command("iptables", "-t", "mangle", "-S")
+	if err != nil {
 		return false
 	}
-	if _, err := command("iptables", "-t", "mangle", "-C", "OUTPUT", "-j", vlessMangleChain); err != nil {
+	filter, err := command("iptables", "-S")
+	if err != nil {
 		return false
 	}
-	lanIface := chooseLanIface()
-	if _, err := command("iptables", "-t", "mangle", "-C", "PREROUTING",
-		"-i", lanIface, "-j", vlessMangleChain); err != nil {
+	localIPs, err := localIPv4Addresses()
+	if err != nil {
 		return false
 	}
-	mark := fmt.Sprintf("0x%x/0xffffffff", tunFwmark)
-	for _, protocol := range tunnelProtocols {
-		if _, err := command("iptables", "-t", "mangle", "-C", vlessMangleChain,
-			"-p", protocol, "-j", "MARK", "--set-mark", mark); err != nil {
+	// Reuse the installer to check bypasses, both protocols and protection.
+	for _, args := range globalRouteCommands(chooseLanIface(), nil, nil, localIPs) {
+		if args[0] != "iptables" {
+			continue
+		}
+		snapshot, rule := filter, args[1:]
+		if len(rule) > 2 && rule[0] == "-t" {
+			snapshot, rule = mangle, rule[2:]
+		}
+		if rule[0] == "-I" {
+			rule = append([]string{"-A", rule[1]}, rule[3:]...)
+		}
+		if !iptablesSnapshotHasRule(snapshot, rule) {
 			return false
 		}
 	}
-	for _, check := range [][]string{
-		{"iptables", "-C", "INPUT", "-i", tunIface, "-j", "ACCEPT"},
-		{"iptables", "-C", "FORWARD", "-i", lanIface, "-o", tunIface, "-j", "ACCEPT"},
-		{"iptables", "-C", "FORWARD", "-i", tunIface, "-j", "ACCEPT"},
-		{"iptables", "-t", "nat", "-C", "POSTROUTING", "-o", tunIface, "-j", "RETURN"},
-	} {
-		if _, err := command(check[0], check[1:]...); err != nil {
-			return false
-		}
+	if !firstChainRuleMatches(mangle, []string{"OUTPUT", "-j", vlessOutputChain}) ||
+		!firstChainRuleMatches(mangle, []string{"PREROUTING", "-i", chooseLanIface(), "-j", vlessMangleChain}) ||
+		!firstChainRuleMatches(mangle, []string{"INPUT", "-j", vlessInputChain}) ||
+		!firstChainRuleMatches(filter, []string{"INPUT", "-j", vlessInputChain}) {
+		return false
 	}
 	rules, err := command("ip", "rule", "show")
-	if err != nil || !outputLineHasTokens(rules, "fwmark", fmt.Sprintf("0x%x", tunFwmark), "lookup", tunRtTable) ||
-		!outputLineHasTokens(rules, "fwmark", fmt.Sprintf("0x%x", WANFwmark), "lookup", "main") {
+	if err != nil || !outputLineHasTokens(rules, "fwmark", "0x1", "lookup", tunRtTable) ||
+		!outputLineHasTokens(rules, "fwmark", "0x9911", "lookup", "main") {
 		return false
 	}
 	routes, err := command("ip", "route", "show", "table", tunRtTable)
-	if err != nil || !outputLineHasTokens(routes, "default", "dev", tunIface) {
-		return false
+	return err == nil && (outputLineHasTokens(routes, "local", "default", "dev", "lo") ||
+		outputLineHasTokens(routes, "local", "0.0.0.0/0", "dev", "lo"))
+}
+
+func iptablesSnapshotHasRule(snapshot string, rule []string) bool {
+	// iptables adds an implicit protocol match when printing --dport.
+	key := func(fields []string) string {
+		var result []string
+		for i := 0; i < len(fields); i++ {
+			if fields[i] == "-m" && i+1 < len(fields) && (fields[i+1] == "tcp" || fields[i+1] == "udp") {
+				i++
+				continue
+			}
+			result = append(result, fields[i])
+			if fields[i] == "--set-mark" {
+				result[len(result)-1] = "--set-xmark"
+			}
+		}
+		return strings.Join(result, " ")
 	}
-	return true
+	want := key(rule)
+	for _, line := range strings.Split(snapshot, "\n") {
+		if key(strings.Fields(line)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func firstChainRuleMatches(output string, hook []string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 1 && fields[0] == "-A" && fields[1] == hook[0] {
+			return strings.Join(fields[1:], " ") == strings.Join(hook, " ")
+		}
+	}
+	return false
 }
 
 func outputLineHasTokens(output string, required ...string) bool {
@@ -330,80 +343,52 @@ func outputLineHasTokens(output string, required ...string) bool {
 	return false
 }
 
-// DisableGlobalRoute removes everything EnableGlobalRoute installed.
-func DisableGlobalRoute() {
-	// PREROUTING/OUTPUT jump.
-	for _, iface := range lanIfaces {
+func DisableGlobalRoute() { disableGlobalRoute(run) }
+
+func disableGlobalRoute(command func(string, ...string) (string, error)) {
+	remove := func(name string, args ...string) {
 		for i := 0; i < 5; i++ {
-			if _, err := run("iptables", "-t", "mangle", "-D", "PREROUTING",
-				"-i", iface, "-j", vlessMangleChain); err != nil {
+			if _, err := command(name, args...); err != nil {
 				break
 			}
 		}
 	}
-	for i := 0; i < 5; i++ {
-		if _, err := run("iptables", "-t", "mangle", "-D", "OUTPUT",
-			"-j", vlessMangleChain); err != nil {
-			break
-		}
+	// Detach hooks before removing policy routes, including stale old builds.
+	remove("iptables", "-t", "mangle", "-D", "OUTPUT", "-j", vlessOutputChain)
+	remove("iptables", "-t", "mangle", "-D", "OUTPUT", "-j", vlessMangleChain)
+	for _, iface := range append(append([]string{}, lanIfaces...), "lo") {
+		remove("iptables", "-t", "mangle", "-D", "PREROUTING", "-i", iface, "-j", vlessMangleChain)
 	}
-
-	// Flush + delete our mangle chain.
-	run("iptables", "-t", "mangle", "-F", vlessMangleChain)
-	run("iptables", "-t", "mangle", "-X", vlessMangleChain)
-
-	// FORWARD rules.
+	remove("iptables", "-D", "INPUT", "-j", vlessInputChain)
+	remove("iptables", "-t", "mangle", "-D", "INPUT", "-j", vlessInputChain)
+	for _, chain := range []string{vlessMangleChain, vlessOutputChain, vlessInputChain, "VLESS_PROBE"} {
+		command("iptables", "-t", "mangle", "-F", chain)
+		command("iptables", "-t", "mangle", "-X", chain)
+	}
+	command("iptables", "-F", vlessInputChain)
+	command("iptables", "-X", vlessInputChain)
+	for _, mark := range []string{"0x1", "0x1/0x1"} {
+		remove("ip", "rule", "del", "fwmark", mark, "lookup", tunRtTable)
+	}
+	remove("ip", "rule", "del", "fwmark", "0x9911", "lookup", "main")
+	command("ip", "route", "flush", "table", tunRtTable)
+	// Legacy TUN and TCP REDIRECT state. Never flush Keenetic's chains.
 	for _, iface := range lanIfaces {
-		for i := 0; i < 3; i++ {
-			if _, err := run("iptables", "-D", "FORWARD", "-i", iface, "-o", tunIface, "-j", "ACCEPT"); err != nil {
-				break
-			}
-		}
+		remove("iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", "tcp", "-j", vlessTCPChain)
+		remove("iptables", "-D", "FORWARD", "-i", iface, "-o", tunIface, "-j", "ACCEPT")
 	}
-	for i := 0; i < 3; i++ {
-		if _, err := run("iptables", "-D", "FORWARD", "-i", tunIface, "-j", "ACCEPT"); err != nil {
-			break
-		}
+	remove("iptables", "-t", "nat", "-D", "OUTPUT", "-p", "tcp", "-j", vlessTCPChain)
+	remove("iptables", "-D", "INPUT", "-p", "tcp", "--dport", fmt.Sprint(tcpRedirectPort), "-j", vlessTCPInput)
+	command("iptables", "-t", "nat", "-F", vlessTCPChain)
+	command("iptables", "-t", "nat", "-X", vlessTCPChain)
+	command("iptables", "-F", vlessTCPInput)
+	command("iptables", "-X", vlessTCPInput)
+	remove("iptables", "-D", "FORWARD", "-i", tunIface, "-j", "ACCEPT")
+	remove("iptables", "-D", "INPUT", "-i", tunIface, "-j", "ACCEPT")
+	remove("iptables", "-t", "nat", "-D", "POSTROUTING", "-o", tunIface, "-j", "RETURN")
+	for _, protocol := range tunnelProtocols {
+		remove("iptables", "-t", "mangle", "-D", "PREROUTING", "-p", protocol, "-m", "socket", "-j", "VLESS_DIVERT")
 	}
-
-	// ip rule + route.
-	// Try both the new exact form and the old "0x1/0x1" buggy-mask form
-	// so an upgrade from a stale TPROXY build also cleans up.
-	markExact := fmt.Sprintf("0x%x", tunFwmark)
-	for _, ruleMark := range []string{markExact, fmt.Sprintf("0x%x/0x%x", tunFwmark, tunFwmark)} {
-		for i := 0; i < 5; i++ {
-			cmd := exec.Command("ip", "rule", "del", "fwmark", ruleMark, "lookup", tunRtTable)
-			if err := cmd.Run(); err != nil {
-				break
-			}
-		}
-	}
-	wanMarkExact := fmt.Sprintf("0x%x", WANFwmark)
-	for i := 0; i < 5; i++ {
-		cmd := exec.Command("ip", "rule", "del", "fwmark", wanMarkExact, "lookup", "main")
-		if err := cmd.Run(); err != nil {
-			break
-		}
-	}
-	run("ip", "route", "flush", "table", tunRtTable)
-
-	// INPUT rule for tun0.
-	for i := 0; i < 3; i++ {
-		if _, err := run("iptables", "-D", "INPUT", "-i", tunIface, "-j", "ACCEPT"); err != nil {
-			break
-		}
-	}
-
-	// POSTROUTING nat bypass for tun0.
-	for i := 0; i < 3; i++ {
-		if _, err := run("iptables", "-t", "nat", "-D", "POSTROUTING", "-o", tunIface, "-j", "RETURN"); err != nil {
-			break
-		}
-	}
-
-	// Legacy TPROXY-mode DIVERT chain (pre-1.5 builds). No-ops if absent.
-	run("iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "-m", "socket", "-j", "VLESS_DIVERT")
-	run("iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "udp", "-m", "socket", "-j", "VLESS_DIVERT")
-	run("iptables", "-t", "mangle", "-F", "VLESS_DIVERT")
-	run("iptables", "-t", "mangle", "-X", "VLESS_DIVERT")
+	command("iptables", "-t", "mangle", "-F", "VLESS_DIVERT")
+	command("iptables", "-t", "mangle", "-X", "VLESS_DIVERT")
 }

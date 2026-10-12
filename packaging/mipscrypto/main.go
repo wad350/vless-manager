@@ -1,0 +1,261 @@
+// mipscrypto stages the pinned x/crypto module without changing the Go module cache.
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+const cryptoVersion = "v0.55.0"
+
+var upstreamHashes = map[string]string{
+	"chacha20/chacha_generic.go":       "34403e82b1387b4402b00ce30c1364508c333f4bdbe671321690c6ebaa8d3180",
+	"chacha20/chacha_noasm.go":         "bbdb67ceb30ef13efc54e17935f47e00744b96754e03364e606d4f1f8f9085c1",
+	"internal/poly1305/sum_generic.go": "b0094a2895d5bda42dcaaf57c0b31fc914c3b6c6aa6237aab0100a6d78346933",
+}
+
+func main() {
+	out := flag.String("out", "build/mips-crypto", "staging directory")
+	generate := flag.Bool("generate", false, "regenerate the checked-in assembly")
+	flag.Parse()
+	if err := run(*out, *generate); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run(out string, generate bool) error {
+	root, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	overlay := filepath.Join(root, "packaging", "mipscrypto", "_overlay")
+	if generate {
+		if err := os.WriteFile(filepath.Join(overlay, "chacha_mipsle.s"), []byte(assemblySource()), 0644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(root, "packaging", "mipscrypto", "_poly1305", "products_mipsle.s"), []byte(productsAssemblySource()), 0644)
+	}
+	output, err := exec.Command("go", "list", "-m", "-json", "golang.org/x/crypto").Output()
+	if err != nil {
+		return fmt.Errorf("locate x/crypto: %w", err)
+	}
+	var module struct {
+		Version string
+		Dir     string
+		Replace *json.RawMessage
+	}
+	if err := json.Unmarshal(output, &module); err != nil {
+		return err
+	}
+	if module.Version != cryptoVersion || module.Replace != nil || module.Dir == "" {
+		return fmt.Errorf("MIPS crypto requires unmodified x/crypto %s; review the patch before upgrading", cryptoVersion)
+	}
+	for name, want := range upstreamHashes {
+		data, err := os.ReadFile(filepath.Join(module.Dir, name))
+		if err != nil {
+			return err
+		}
+		if fmt.Sprintf("%x", sha256.Sum256(data)) != want {
+			return fmt.Errorf("unexpected upstream crypto source: %s", name)
+		}
+	}
+	out, err = filepath.Abs(out)
+	if err != nil {
+		return err
+	}
+	cache, err := exec.Command("go", "env", "GOMODCACHE").Output()
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(strings.TrimSpace(string(cache)), out)
+	if err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+		return fmt.Errorf("staging directory must be outside the module cache")
+	}
+	if err := os.MkdirAll(out, 0755); err != nil {
+		return err
+	}
+	// A fresh copy prevents removed patch files from surviving a rebuild.
+	staged, err := os.MkdirTemp(out, "xcrypto-")
+	if err != nil {
+		return err
+	}
+	if err := copyTree(module.Dir, staged); err != nil {
+		return err
+	}
+	if err := copyTree(overlay, filepath.Join(staged, "chacha20")); err != nil {
+		return err
+	}
+	if err := copyTree(filepath.Join(root, "packaging", "mipscrypto", "_aead"), filepath.Join(staged, "chacha20poly1305")); err != nil {
+		return err
+	}
+	if err := stagePoly1305(filepath.Join(staged, "internal", "poly1305"), filepath.Join(root, "packaging", "mipscrypto", "_poly1305")); err != nil {
+		return err
+	}
+	for _, name := range []string{"go.mod", "go.sum"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(out, "crypto."+name[3:]), data, 0644); err != nil {
+			return err
+		}
+	}
+	modfile := filepath.Join(out, "crypto.mod")
+	cmd := exec.Command("go", "mod", "edit", "-modfile="+modfile, "-replace=golang.org/x/crypto="+staged)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("stage module replacement: %w: %s", err, output)
+	}
+	fmt.Println(modfile)
+	return nil
+}
+
+// Retain the upstream algorithm and specialize only its 64x64 multiplication.
+func stagePoly1305(dst, overlay string) error {
+	path := filepath.Join(dst, "sum_generic.go")
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, source, parser.ParseComments)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "updateGeneric" {
+			fn.Name.Name = "updateGenericGo"
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("upstream Poly1305 update function not found")
+	}
+	var generic strings.Builder
+	if err := format.Node(&generic, fset, file); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(generic.String()), 0644); err != nil {
+		return err
+	}
+	variant, err := parser.ParseFile(fset, path, source, parser.ParseComments)
+	if err != nil {
+		return err
+	}
+	for _, decl := range variant.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "updateGeneric" {
+			continue
+		}
+		fn.Name.Name = "updateMIPS"
+		if err := fusePolyProducts(fn); err != nil {
+			return err
+		}
+		var out strings.Builder
+		out.WriteString("// Copyright 2018 The Go Authors. All rights reserved.\n// Use of this source code is governed by the upstream BSD-style LICENSE.\n// Code generated by packaging/mipscrypto; DO NOT EDIT.\n//go:build linux && mipsle && gc && !purego\n\npackage poly1305\n\nimport (\"encoding/binary\"; \"math/bits\")\n\n")
+		if err := format.Node(&out, fset, fn); err != nil {
+			return err
+		}
+		formatted, err := format.Source([]byte(out.String()))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dst, "update_mipsle.go"), formatted, 0644); err != nil {
+			return err
+		}
+	}
+	return copyTree(overlay, dst)
+}
+
+func fusePolyProducts(fn *ast.FuncDecl) error {
+	products := []string{"h0r0", "h1r0", "h2r0", "h0r1", "h1r1", "h2r1"}
+	fused := 0
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		block, ok := node.(*ast.BlockStmt)
+		if !ok {
+			return true
+		}
+		for i := 0; i+len(products) <= len(block.List); i++ {
+			for j, product := range products {
+				statement, ok := block.List[i+j].(*ast.AssignStmt)
+				if !ok || statement.Tok != token.DEFINE || len(statement.Lhs) != 1 || len(statement.Rhs) != 1 {
+					goto next
+				}
+				name, ok := statement.Lhs[0].(*ast.Ident)
+				if !ok || name.Name != product {
+					goto next
+				}
+				call, ok := statement.Rhs[0].(*ast.CallExpr)
+				if !ok || len(call.Args) != 2 {
+					goto next
+				}
+				callee, ok := call.Fun.(*ast.Ident)
+				if !ok || callee.Name != "mul64" {
+					goto next
+				}
+				for k, want := range []string{product[:2], product[2:]} {
+					arg, ok := call.Args[k].(*ast.Ident)
+					if !ok || arg.Name != want {
+						goto next
+					}
+				}
+			}
+			{
+				statement := &ast.AssignStmt{Tok: token.DEFINE}
+				for _, name := range products {
+					statement.Lhs = append(statement.Lhs, ast.NewIdent(name))
+				}
+				call := &ast.CallExpr{Fun: ast.NewIdent("productsMIPS")}
+				for _, name := range []string{"h0", "h1", "h2", "r0", "r1"} {
+					call.Args = append(call.Args, ast.NewIdent(name))
+				}
+				statement.Rhs = []ast.Expr{call}
+				block.List = append(append(block.List[:i:i], statement), block.List[i+len(products):]...)
+				fused++
+				continue
+			}
+		next:
+		}
+		return true
+	})
+	if fused != 1 {
+		return fmt.Errorf("expected one group of six Poly1305 products, found %d", fused)
+	}
+	return nil
+}
+
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("non-regular module source: %s", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0644)
+	})
+}

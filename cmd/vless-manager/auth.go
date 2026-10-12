@@ -20,6 +20,7 @@ import (
 const authCookieName = "vless_manager_session"
 
 var errInvalidCredentials = errors.New("invalid credentials")
+var apiOriginProtection http.CrossOriginProtection
 
 type credentialAuthenticator interface {
 	Authenticate(context.Context, string, string) error

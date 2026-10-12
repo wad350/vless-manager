@@ -7,20 +7,71 @@ case "$(uname -m)" in
     mips*)
         export GOMEMLIMIT="${GOMEMLIMIT:-32MiB}"
         export GOGC="${GOGC:-50}"
+        CPU_LIMIT=$(awk '
+            /^system type[[:space:]]*:/ && /MediaTek MT7621([[:space:]]|$)/ { mt7621 = 1 }
+            /^processor[[:space:]]*:/ { logical++ }
+            /^core[[:space:]]*:/ { cores[$NF] = 1 }
+            END {
+                for (core in cores) physical++
+                if (mt7621 && logical == 4 && physical == 2) print 2
+            }
+        ' /proc/cpuinfo 2>/dev/null)
+        # The bounded MIPS32r2 ChaCha backend is tested on native MT7621 TPROXY.
+        # Its own ISA check still falls back to Go on unsupported processors.
+        if [ "$CPU_LIMIT" = "2" ]; then
+            export VLESS_MANAGER_MIPS_CHACHA20="${VLESS_MANAGER_MIPS_CHACHA20:-auto}"
+            # Four VPEs share two physical cores; retain the measured Go limit.
+            export GOMAXPROCS="${GOMAXPROCS:-2}"
+        else
+            export VLESS_MANAGER_MIPS_CHACHA20="${VLESS_MANAGER_MIPS_CHACHA20:-generic}"
+        fi
         ;;
 esac
 
 BIN=/opt/bin/vless-manager
 DATA_DIR=/opt/etc/vless-manager
-PID_FILE=/opt/var/run/vless-manager.pid
-LOG_FILE=/opt/var/log/vless-manager.log
-MAX_LOG_BYTES=524288
+RUNTIME_DIR=${VLESS_MANAGER_RUNTIME_DIR:-/tmp/vless-manager}
+PID_FILE="$RUNTIME_DIR/manager.pid"
+LEGACY_PID_FILE=/opt/var/run/vless-manager.pid
+# A newly installed script must still be able to stop the old running build.
+if [ -f "$LEGACY_PID_FILE" ] && kill -0 "$(cat "$LEGACY_PID_FILE")" 2>/dev/null; then
+    if [ ! -f "$PID_FILE" ] || ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        PID_FILE="$LEGACY_PID_FILE"
+    fi
+fi
+LOG_FILE="$RUNTIME_DIR/process.log"
+MAX_LOG_BYTES=65536
 
 # clean_routing — remove all iptables/ip-rule state vless-manager may have
 # installed. The manager's own DisableGlobalRoute runs on graceful shutdown,
 # but if the process is kill -9'd we have to mop up.
 clean_routing() {
-    # TUN-mode mangle chain (current architecture, v1.5+)
+    # Native TCP/UDP TPROXY. Detach hooks before flushing policy routes.
+    while iptables -t mangle -D OUTPUT -j VLESS_OUTPUT 2>/dev/null; do :; done
+    while iptables -D INPUT -j VLESS_IN 2>/dev/null; do :; done
+    while iptables -t mangle -D INPUT -j VLESS_IN 2>/dev/null; do :; done
+    for iface in br0 br-lan lo; do
+        while iptables -t mangle -D PREROUTING -i "$iface" -j VLESS_TPROXY 2>/dev/null; do :; done
+    done
+    iptables -t mangle -F VLESS_OUTPUT 2>/dev/null
+    iptables -t mangle -X VLESS_OUTPUT 2>/dev/null
+    iptables -t mangle -F VLESS_PROBE 2>/dev/null
+    iptables -t mangle -X VLESS_PROBE 2>/dev/null
+    iptables -t mangle -F VLESS_IN 2>/dev/null
+    iptables -t mangle -X VLESS_IN 2>/dev/null
+    iptables -F VLESS_IN 2>/dev/null
+    iptables -X VLESS_IN 2>/dev/null
+    # Experimental kernel TCP REDIRECT, also clean when returning to TUN.
+    for iface in br0 br-lan; do
+        while iptables -t nat -D PREROUTING -i "$iface" -p tcp -j VLESS_TCP 2>/dev/null; do :; done
+    done
+    while iptables -t nat -D OUTPUT -p tcp -j VLESS_TCP 2>/dev/null; do :; done
+    iptables -t nat -F VLESS_TCP 2>/dev/null
+    iptables -t nat -X VLESS_TCP 2>/dev/null
+    while iptables -D INPUT -p tcp --dport 7892 -j VLESS_TCP_IN 2>/dev/null; do :; done
+    iptables -F VLESS_TCP_IN 2>/dev/null
+    iptables -X VLESS_TCP_IN 2>/dev/null
+    # Legacy TUN rules; upgrades must remove the old capture path.
     iptables -t mangle -D PREROUTING -i br0 -j VLESS_TPROXY 2>/dev/null
     iptables -t mangle -D OUTPUT -j VLESS_TPROXY 2>/dev/null
     iptables -t mangle -F VLESS_TPROXY 2>/dev/null
@@ -50,10 +101,7 @@ clean_routing() {
     iptables -t nat -X VLESS_REDIR 2>/dev/null
 
     # Legacy TUN-mode ip-rule artifacts (pre-1.2 builds)
-    for p in 2 4 5 6; do
-        while ip rule del pref $p 2>/dev/null; do :; done
-    done
-    ip route flush table 200 2>/dev/null
+    # Do not delete rules by preference: they may belong to Keenetic.
     iptables -t nat -D POSTROUTING -o tun0 -j MASQUERADE 2>/dev/null
 }
 
@@ -64,11 +112,17 @@ start() {
     fi
     clean_routing
     echo "Starting vless-manager..."
-    mkdir -p /opt/var/run /opt/var/log "$DATA_DIR"
+    PID_FILE="$RUNTIME_DIR/manager.pid"
+    mkdir -p "$DATA_DIR" "$RUNTIME_DIR" || return 1
+    chmod 700 "$RUNTIME_DIR" || return 1
     if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE")" -gt "$MAX_LOG_BYTES" ]; then
         mv -f "$LOG_FILE" "$LOG_FILE.1"
     fi
-    "$BIN" -data-dir "$DATA_DIR" >> "$LOG_FILE" 2>&1 &
+    set -- -data-dir "$DATA_DIR" -runtime-dir "$RUNTIME_DIR"
+    if [ "${VLESS_MANAGER_DIAGNOSTICS:-0}" = "1" ]; then
+        set -- "$@" -diagnostics
+    fi
+    "$BIN" "$@" >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     echo "Started (PID $!)"
 }
@@ -91,8 +145,9 @@ stop() {
 status() {
     if [ -f "$PID_FILE" ] && kill -0 "$(cat $PID_FILE)" 2>/dev/null; then
         echo "vless-manager running (PID $(cat $PID_FILE))"
-    else
-        echo "vless-manager stopped"
+        else
+            echo "vless-manager stopped"
+            return 1
     fi
 }
 

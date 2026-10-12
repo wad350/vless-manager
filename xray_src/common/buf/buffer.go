@@ -77,6 +77,12 @@ func FromBytes(b []byte) *Buffer {
 	}
 }
 
+// FromOwnedBytes transfers an exclusively owned allocation to the size-aware pool.
+// Callers must not retain or mutate b after handing it to downstream readers.
+func FromOwnedBytes(b []byte) *Buffer {
+	return &Buffer{v: b[:cap(b)], end: int32(len(b)), ownership: bytespools}
+}
+
 // StackNew creates a new Buffer object on stack, managed.
 // This method is for buffers that is released in the same function.
 func StackNew() Buffer {
@@ -153,6 +159,18 @@ func (b *Buffer) Extend(n int32) []byte {
 	ext := b.v[b.end:end]
 	b.end = end
 	clear(ext)
+	return ext
+}
+
+// ExtendForRead reserves storage without clearing it. Only a reader may fill
+// this region; trim it to the actual read length before exposing the buffer.
+func (b *Buffer) ExtendForRead(n int32) []byte {
+	end := b.end + n
+	if end > int32(len(b.v)) {
+		panic("extending out of bound")
+	}
+	ext := b.v[b.end:end]
+	b.end = end
 	return ext
 }
 

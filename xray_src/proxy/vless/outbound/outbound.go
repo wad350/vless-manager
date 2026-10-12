@@ -22,6 +22,7 @@ import (
 	"github.com/xtls/xray-core/common/mux"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
+	protocoludp "github.com/xtls/xray-core/common/protocol/udp"
 	"github.com/xtls/xray-core/common/retry"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/signal"
@@ -309,6 +310,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 
 	clientReader := link.Reader // .(*pipe.Reader)
 	clientWriter := link.Writer // .(*pipe.Writer)
+	if target.Network == net.Network_UDP {
+		clientWriter = protocoludp.TrackVLESSPackets(clientWriter, false)
+	}
 	trafficState := proxy.NewTrafficState(account.ID.Bytes())
 	if request.Command == protocol.RequestCommandUDP && (requestAddons.Flow == vless.XRV || (h.cone && request.Port != 53 && request.Port != 443)) {
 		request.Command = protocol.RequestCommandMux
@@ -328,6 +332,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		serverWriter := encoding.EncodeBodyAddons(bufferWriter, request, requestAddons, trafficState, true, ctx, conn, ob)
 		if request.Command == protocol.RequestCommandMux && request.Port == 666 {
 			serverWriter = xudp.NewPacketWriter(serverWriter, target, xudp.GetGlobalID(ctx))
+		}
+		if target.Network == net.Network_UDP {
+			serverWriter = protocoludp.TrackVLESSPackets(serverWriter, true)
 		}
 		timeoutReader, ok := clientReader.(buf.TimeoutReader)
 		if ok {

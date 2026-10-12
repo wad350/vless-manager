@@ -100,6 +100,9 @@ func (h *Hub) WriteTo(payload []byte, dest net.Destination) (int, error) {
 func (h *Hub) start() {
 	c := h.cache
 	defer close(c)
+	if h.startBatch() {
+		return
+	}
 
 	oobBytes := make([]byte, 256)
 
@@ -107,12 +110,13 @@ func (h *Hub) start() {
 		buffer := buf.New()
 		var noob int
 		var udpAddr *net.UDPAddr
-		rawBytes := buffer.Extend(buf.Size)
+		rawBytes := buffer.ExtendForRead(buf.Size)
 
 		var n int
 		var err error
+		var flags int
 		if h.udpConn != nil {
-			n, noob, _, udpAddr, err = ReadUDPMsg(h.udpConn, rawBytes, oobBytes)
+			n, noob, flags, udpAddr, err = ReadUDPMsg(h.udpConn, rawBytes, oobBytes)
 		} else {
 			var addr net.Addr
 			n, addr, err = h.conn.ReadFrom(rawBytes)
@@ -126,6 +130,11 @@ func (h *Hub) start() {
 			buffer.Release()
 			break
 		}
+		if udpPacketTruncated(flags) {
+			udp.RecordTruncated()
+			buffer.Release()
+			continue
+		}
 		buffer.Resize(0, int32(n))
 
 		if buffer.IsEmpty() {
@@ -133,25 +142,30 @@ func (h *Hub) start() {
 			continue
 		}
 
-		payload := &udp.Packet{
-			Payload: buffer,
-			Source:  net.UDPDestination(net.IPAddress(udpAddr.IP), net.Port(udpAddr.Port)),
-		}
-		if h.recvOrigDest && noob > 0 {
-			payload.Target = RetrieveOriginalDest(oobBytes[:noob])
-			if payload.Target.IsValid() {
-				errors.LogDebug(context.Background(), "UDP original destination: ", payload.Target)
-			} else {
-				errors.LogInfo(context.Background(), "failed to read UDP original destination")
-			}
-		}
+		h.enqueue(buffer, udpAddr, oobBytes[:noob])
+	}
+}
 
-		select {
-		case c <- payload:
-		default:
-			buffer.Release()
-			payload.Payload = nil
+func (h *Hub) enqueue(buffer *buf.Buffer, source *net.UDPAddr, oob []byte) {
+	udp.RecordReceived()
+	payload := &udp.Packet{
+		Payload: buffer,
+		Source:  net.UDPDestination(net.IPAddress(source.IP), net.Port(source.Port)),
+	}
+	if h.recvOrigDest && len(oob) > 0 {
+		payload.Target = RetrieveOriginalDest(oob)
+		if payload.Target.IsValid() {
+			errors.LogDebug(context.Background(), "UDP original destination: ", payload.Target)
+		} else {
+			errors.LogInfo(context.Background(), "failed to read UDP original destination")
 		}
+	}
+	select {
+	case h.cache <- payload:
+	default:
+		udp.RecordQueueDrop()
+		buffer.Release()
+		payload.Payload = nil
 	}
 }
 

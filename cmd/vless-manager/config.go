@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -151,6 +153,12 @@ func loadConfig(path string) (*Config, error) {
 	// Patch in defaults for any new AppSettings field that was added after
 	// the on-disk config was first written.
 	cfg.Settings.fillDefaults()
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		return nil, fmt.Errorf("port must be between 1 and 65535")
+	}
+	if err := cfg.Settings.validate(); err != nil {
+		return nil, fmt.Errorf("invalid saved settings: %w", err)
+	}
 	migrateServerIDs(cfg)
 	return cfg, nil
 }
@@ -282,6 +290,10 @@ func writeJSONAtomic(path string, value any) error {
 	if err != nil {
 		return err
 	}
+	// Do not rewrite flash when an automatic save repeats the stored state.
+	if previous, err := os.ReadFile(path); err == nil && bytes.Equal(previous, data) {
+		return nil
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -292,7 +304,7 @@ func writeJSONAtomic(path string, value any) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0644); err != nil {
+	if err := tmp.Chmod(0600); err != nil {
 		_ = tmp.Close()
 		return err
 	}

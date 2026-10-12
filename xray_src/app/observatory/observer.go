@@ -39,6 +39,8 @@ type Observer struct {
 }
 
 func (o *Observer) GetObservation(ctx context.Context) (proto.Message, error) {
+	o.statusLock.Lock()
+	defer o.statusLock.Unlock()
 	return &ObservationResult{Status: o.status}, nil
 }
 
@@ -204,11 +206,18 @@ func (o *Observer) updateStatusForResult(outbound string, result *ProbeResult) {
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
 	var status *OutboundStatus
+	// Published reports are read concurrently by routing. Copy on probe updates,
+	// not on every new connection, and never mutate a previously published row.
 	if location := o.findStatusLocationLockHolderOnly(outbound); location != -1 {
-		status = o.status[location]
+		status = proto.Clone(o.status[location]).(*OutboundStatus)
+		o.status = slices.Clone(o.status)
+		o.status[location] = status
 	} else {
 		status = &OutboundStatus{}
-		o.status = append(o.status, status)
+		updated := make([]*OutboundStatus, len(o.status)+1)
+		copy(updated, o.status)
+		updated[len(o.status)] = status
+		o.status = updated
 	}
 
 	status.LastTryTime = time.Now().Unix()

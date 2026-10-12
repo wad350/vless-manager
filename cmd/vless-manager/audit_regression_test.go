@@ -67,7 +67,11 @@ func TestGlobalRouteReadyRequiresPolicyRulesAndRouteOutput(t *testing.T) {
 		case "ip rule show":
 			return "1: from all fwmark 0x1 lookup 100\n2: from all fwmark 0x9911 lookup main\n", nil
 		case "ip route show table 100":
-			return "default dev tun0 scope link\n", nil
+			return "local default dev lo scope host\n", nil
+		case "iptables -t mangle -S":
+			return tproxyReadySnapshots(t)[0], nil
+		case "iptables -S":
+			return tproxyReadySnapshots(t)[1], nil
 		default:
 			return "ok", nil
 		}

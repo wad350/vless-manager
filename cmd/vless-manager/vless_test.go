@@ -220,11 +220,11 @@ func TestBuildXrayDefaultsUDPToXUDP(t *testing.T) {
 	}
 }
 
-func TestGeneratedTunMTUIsFixedAt1500(t *testing.T) {
+func TestGeneratedNativeTCPUDPInbound(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Settings.BypassRouteRussia = false
 	data, err := generateXrayConfig(cfg, &VLESSServer{
-		Address: "example.com",
+		Address: "127.0.0.1",
 		Port:    443,
 		UUID:    "00000000-0000-0000-0000-000000000001",
 		Network: "tcp",
@@ -237,16 +237,26 @@ func TestGeneratedTunMTUIsFixedAt1500(t *testing.T) {
 		t.Fatal(err)
 	}
 	inbounds := generated["inbounds"].([]any)
-	tun := inbounds[0].(map[string]any)["settings"].(map[string]any)
-	if tun["mtu"] != float64(1500) {
-		t.Fatalf("TUN MTU = %v, want 1500", tun["mtu"])
+	if len(inbounds) != 2 {
+		t.Fatalf("inbounds = %v", inbounds)
 	}
-	addresses, ok := tun["gateway"].([]any)
-	if !ok || len(addresses) != 1 || addresses[0] != tunAddr {
-		t.Fatalf("TUN gateway = %v, want [%q]", tun["gateway"], tunAddr)
+	inbound := inbounds[0].(map[string]any)
+	if inbound["protocol"] != "dokodemo-door" || inbound["port"] != float64(tcpRedirectPort) {
+		t.Fatal(inbound)
 	}
-	if _, exists := tun["inet4_address"]; exists {
-		t.Fatal("generated config contains removed inet4_address field")
+	settings := inbound["settings"].(map[string]any)
+	if settings["network"] != "tcp,udp" || settings["followRedirect"] != true || settings["address"] != nil || settings["port"] != nil {
+		t.Fatal(settings)
+	}
+	options := inbound["streamSettings"].(map[string]any)["sockopt"].(map[string]any)
+	if options["tproxy"] != "tproxy" || options["mark"] != float64(WANFwmark) {
+		t.Fatal(options)
+	}
+	if _, _, err := parseXrayConfig(data); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := parseXrayConfig([]byte(`{"inbounds":[{"protocol":"tun","settings":{}}]}`)); err == nil {
+		t.Fatal("removed gVisor/TUN inbound is still registered")
 	}
 }
 
@@ -268,10 +278,14 @@ func TestGeneratedConfigRoutesPublicTCPUDPThroughProxy(t *testing.T) {
 	}
 	route := generated["routing"].(map[string]any)
 	rules := route["rules"].([]any)
-	if len(rules) < 2 {
+	if len(rules) < 3 {
 		t.Fatalf("route rules = %#v, want private bypass and proxy rules", rules)
 	}
-	privateRule := rules[0].(map[string]any)
+	testRule := rules[0].(map[string]any)
+	if testRule["outboundTag"] != "proxy" || testRule["inboundTag"].([]any)[0] != xrayTunnelTestTag {
+		t.Fatalf("measurement route = %#v, want explicit tunnel", testRule)
+	}
+	privateRule := rules[1].(map[string]any)
 	if privateRule["ip"] == nil || privateRule["outboundTag"] != "direct" {
 		t.Fatalf("first route rule = %#v, want private bypass", privateRule)
 	}
@@ -279,7 +293,7 @@ func TestGeneratedConfigRoutesPublicTCPUDPThroughProxy(t *testing.T) {
 		t.Fatalf("unexpected final rule: %#v", final)
 	}
 	if len(tunnelProtocols) != 2 || tunnelProtocols[0] != "tcp" || tunnelProtocols[1] != "udp" {
-		t.Fatalf("unsupported IP protocols must stay outside TUN: %v", tunnelProtocols)
+		t.Fatalf("unsupported IP protocols must stay outside TPROXY: %v", tunnelProtocols)
 	}
 }
 

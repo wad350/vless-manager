@@ -1158,7 +1158,7 @@ function startLogPoll() {
 
 async function fetchLogs() {
   try {
-    const r = await api('GET', `/logs?since=${logSeq}`);
+    const r = await api('GET', `/logs?since=${logSeq}&format=structured`);
     const incoming = r.entries?.length
       ? r.entries
       : (r.lines || []).map(line => ({ level: 'INFO', component: 'legacy', event: 'message', message: line }));
@@ -1729,6 +1729,12 @@ const SETTINGS_SCHEMA = [
       {
         title: 'Порядок и нагрузка',
         items: [
+          { key: 'tls_client_profile', label: 'TLS-профиль соединения', type: 'select',
+            hint: 'ChaCha20 может ускорить MIPS без аппаратного AES. Заменяет браузерный отпечаток; при проблемах выберите профиль сервера',
+            options: [
+              { value: 'server', label: 'Как в подписке (совместимый)' },
+              { value: 'randomized-chacha20', label: 'ChaCha20 (слабый CPU)' },
+            ] },
           { key: 'ping_test_url', label: 'Адрес HTTP-теста', type: 'text',
             hint: 'Этот адрес должен успешно открыться через проверяемый сервер' },
           { key: 'ping_timeout_sec', label: 'Таймаут одного сервера', unit: 'сек', type: 'int', min: 3,
@@ -2196,7 +2202,7 @@ async function refreshBypassList(btn) {
   btn.innerHTML = '<span class="spinner"></span>';
   try {
     bypassStatus = await api('POST', '/bypass', {});
-    toast(`Bypass обновлён: ${bypassStatus.count} доменов${bypassStatus.restarted ? ', VPN перезапущен' : ''}`);
+    toast(`Белый список: ${bypassStatus.effective_count ?? bypassStatus.count} доменов`);
     renderSettings();
   } catch (e) {
     toast(e.message, 'err');

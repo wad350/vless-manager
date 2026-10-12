@@ -67,6 +67,58 @@ func startTestXray(t *testing.T, config map[string]any, main bool) engineHandle 
 	return b
 }
 
+func TestGroupedProfileObservatoryProbes(t *testing.T) {
+	probes := make(chan struct{}, 4)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+		probes <- struct{}{}
+	}))
+	defer target.Close()
+	port := unusedTCPPort(t)
+	member := VLESSServer{Address: "127.0.0.1", Port: port, UUID: integrationUUID, Network: "grpc", Path: "test"}
+	out, err := buildXrayVLESSOutbound(&member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := out["streamSettings"].(map[string]any)
+	delete(stream, "sockopt")
+	startTestXray(t, map[string]any{
+		"log": map[string]any{"loglevel": "none"},
+		"inbounds": []any{map[string]any{
+			"listen": "127.0.0.1", "port": port, "protocol": "vless",
+			"settings":       map[string]any{"decryption": "none", "clients": []any{map[string]any{"id": integrationUUID}}},
+			"streamSettings": stream,
+		}},
+		"outbounds": []any{map[string]any{"protocol": "freedom", "settings": map[string]any{
+			"finalRules": []any{map[string]any{"action": "allow", "ip": []string{"127.0.0.0/8"}}},
+		}}},
+	}, false)
+	config, err := xrayBaseConfig(&VLESSServer{Members: []VLESSServer{member, member}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config["observatory"].(map[string]any)["probeURL"] = target.URL
+	client := startTestXray(t, config, false)
+	defer client.Close()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-probes:
+		case <-time.After(5 * time.Second):
+			t.Fatal("grouped profile did not probe every outbound through VLESS")
+		}
+	}
+	transport := &http.Transport{DialContext: client.(*embeddedXray).DialContext}
+	defer transport.CloseIdleConnections()
+	response, err := (&http.Client{Transport: transport, Timeout: 5 * time.Second}).Get(target.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("grouped tunnel status = %d", response.StatusCode)
+	}
+}
+
 // Two independent Xray instances exchange real VLESS traffic over every
 // advertised transport. A TCP connect alone would not catch config regressions.
 func TestXrayTransportsTCPUDPAndTraffic(t *testing.T) {
@@ -153,6 +205,82 @@ func TestXrayTransportsTCPUDPAndTraffic(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 		})
+	}
+}
+
+func TestSpeedTestClientForcesTunnelAndReusesConnections(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	serverPort := unusedTCPPort(t)
+	srv := &VLESSServer{Address: "127.0.0.1", Port: serverPort, UUID: integrationUUID, Network: "grpc", Path: "test"}
+	out, err := buildXrayVLESSOutbound(srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := out["streamSettings"].(map[string]any)
+	delete(stream, "sockopt")
+	startTestXray(t, map[string]any{
+		"inbounds": []any{map[string]any{"listen": "127.0.0.1", "port": serverPort, "protocol": "vless",
+			"settings":       map[string]any{"decryption": "none", "clients": []any{map[string]any{"id": integrationUUID}}},
+			"streamSettings": stream}},
+		"outbounds": []any{map[string]any{"protocol": "freedom", "settings": map[string]any{
+			"targetStrategy": "UseIPv4",
+			"finalRules":     []any{map[string]any{"action": "allow", "ip": []string{"127.0.0.0/8"}}}}}},
+	}, false)
+	cfg := defaultConfig()
+	cfg.Settings.BypassDomains = []string{"localhost"}
+	data, err := generateXrayConfig(cfg, srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	delete(config, "inbounds")
+	config["log"] = map[string]any{"loglevel": "debug"}
+	for _, out := range config["outbounds"].([]any) {
+		delete(out.(map[string]any)["streamSettings"].(map[string]any)["sockopt"].(map[string]any), "mark")
+	}
+	engine := startTestXray(t, config, true)
+	pm := &ProcessManager{box: engine, running: true}
+	client, err := pm.tunnelSpeedTestClient(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Timeout = 5 * time.Second
+	defer client.CloseIdleConnections()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "through tunnel") }))
+	defer server.Close()
+	for range 4 {
+		response, err := client.Get(strings.Replace(server.URL, "127.0.0.1", "localhost", 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil || string(body) != "through tunnel" {
+			t.Fatalf("response = %q, %v", body, err)
+		}
+	}
+	traffic := engine.TrafficSnapshot()
+	if traffic.VPNDownload == 0 || traffic.VPNUpload == 0 || traffic.BypassDownload != 0 || traffic.BypassUpload != 0 {
+		t.Fatalf("test bypassed tunnel: %+v", traffic)
+	}
+	pm.running = false
+	if _, err := pm.tunnelSpeedTestClient(2); err == nil {
+		t.Fatal("stopped tunnel silently fell back to direct access")
+	}
+}
+
+func TestEmbeddedDialRejectsCancellationAndNonTCP(t *testing.T) {
+	engine := &embeddedXray{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := engine.DialContext(ctx, "tcp", "example.com:443"); err != context.Canceled {
+		t.Fatalf("cancelled dial = %v", err)
+	}
+	if _, err := engine.DialContext(context.Background(), "udp", "example.com:443"); err == nil {
+		t.Fatal("non-TCP dial accepted")
 	}
 }
 

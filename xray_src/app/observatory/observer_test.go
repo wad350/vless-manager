@@ -1,6 +1,51 @@
 package observatory
 
-import "testing"
+import (
+	"context"
+	"sync"
+	"testing"
+
+	"google.golang.org/protobuf/proto"
+)
+
+func TestObservationSnapshotSurvivesUpdates(t *testing.T) {
+	o := &Observer{}
+	o.updateStatusForResult("one", &ProbeResult{Alive: true, Delay: 42})
+	report, err := o.GetObservation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := proto.Clone(report)
+	o.updateStatusForResult("one", &ProbeResult{Alive: false, LastErrorReason: "offline"})
+	o.updateStatusForResult("two", &ProbeResult{Alive: true, Delay: 11})
+	o.clearRemovedOutbounds([]string{"two"})
+	if !proto.Equal(report, before) {
+		t.Fatal("a published observation changed after a probe update")
+	}
+}
+
+func TestObservationConcurrentSnapshots(t *testing.T) {
+	o := &Observer{}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			o.updateStatusForResult("one", &ProbeResult{Alive: true, Delay: int64(i)})
+			o.clearRemovedOutbounds([]string{"one"})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			report, _ := o.GetObservation(context.Background())
+			if _, err := proto.Marshal(report); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	wg.Wait()
+}
 
 func TestObserverUpdateStatusPrunesStaleOutbounds(t *testing.T) {
 	observer := &Observer{

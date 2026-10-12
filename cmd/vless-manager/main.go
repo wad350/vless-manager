@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	protocoludp "github.com/xtls/xray-core/common/protocol/udp"
 )
 
 //go:embed web
@@ -20,6 +22,8 @@ var webFS embed.FS
 
 func main() {
 	dataDir := flag.String("data-dir", "/opt/etc/vless-manager", "Config/data directory")
+	runtimeDir := flag.String("runtime-dir", filepath.Join(os.TempDir(), "vless-manager"), "Volatile cache directory (use RAM-backed storage)")
+	diagnostics := flag.Bool("diagnostics", false, "Enable authenticated LAN-only bounded profiling")
 	probeSelected := flag.Bool("probe-selected", false, "Probe the selected VLESS server without changing routing")
 	flag.Parse()
 	if *probeSelected {
@@ -49,6 +53,9 @@ func main() {
 	if err := os.MkdirAll(*dataDir, 0755); err != nil {
 		log.Fatal(err)
 	}
+	if err := os.MkdirAll(*runtimeDir, 0700); err != nil {
+		log.Fatalf("create runtime directory: %v", err)
+	}
 	if err := backupBeforeXray(*dataDir); err != nil {
 		log.Fatalf("backup before Xray migration: %v", err)
 	}
@@ -56,21 +63,12 @@ func main() {
 		log.Fatalf("initialize subscription device ID: %v", err)
 	}
 
-	cfg, err := loadConfig(cfgPath)
+	cfg, subs, err := loadStartupState(cfgPath, subPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Fatalf("load startup state: %v", err)
 	}
 	pm := NewProcessManager(*dataDir)
 	pm.SetServiceLogLevel(cfg.Settings.ServiceLogLevel)
-
-	subs, err := loadSubscriptions(subPath)
-	if err != nil {
-		pm.event(serviceLogWarn, "subscription", "load.failed",
-			"файл подписок не загружен, используется пустой список",
-			field("path", subPath),
-			field("error", err))
-		subs = nil
-	}
 
 	unsupported := pruneUnsupportedServers(cfg)
 	stale := pruneStaleServers(cfg, subs)
@@ -106,8 +104,11 @@ func main() {
 		}
 	}
 
-	api := newAPIServer(pm, cfg, subs, cfgPath, subPath)
+	api := newAPIServerWithRuntimeDir(pm, cfg, subs, cfgPath, subPath, *runtimeDir)
+	api.diagnosticsEnabled = *diagnostics
+	protocoludp.EnableDiagnostics(*diagnostics)
 	go api.updater.runAutoChecks()
+	go api.runBypassAutoUpdates()
 
 	go func() {
 		st := api.settingsSnapshot()
@@ -209,6 +210,19 @@ func main() {
 	}
 }
 
+// Never prune catalogs or persist an empty replacement after a failed read.
+func loadStartupState(cfgPath, subPath string) (*Config, []*Subscription, error) {
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load config: %w", err)
+	}
+	subs, err := loadSubscriptions(subPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load subscriptions: %w", err)
+	}
+	return cfg, subs, nil
+}
+
 func probeSelectedServer(dataDir string) error {
 	cfg, err := loadConfig(filepath.Join(dataDir, "config.json"))
 	if err != nil {
@@ -218,6 +232,8 @@ func probeSelectedServer(dataDir string) error {
 	if server == nil {
 		return fmt.Errorf("no selected server in config.json")
 	}
+	profile := serverWithTLSProfile(*server, cfg.Settings.TLSClientProfile)
+	server = &profile
 	result := pingOneThroughVLESSContext(context.Background(), server,
 		cfg.Settings.PingTimeout(), cfg.Settings.PingTestURL)
 	if result.Error != "" {

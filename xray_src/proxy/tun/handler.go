@@ -171,6 +171,10 @@ func (t *Handler) HandleConnection(conn net.Conn, destination net.Destination) {
 		return
 	}
 	source := net.DestinationFromAddr(remote)
+	var batchWriter buf.Writer
+	if tcpConn, ok := conn.(*gvisorTCPConn); ok {
+		batchWriter = &tcpBatchWriter{conn: tcpConn, counter: t.downlinkCounter}
+	}
 	if t.uplinkCounter != nil || t.downlinkCounter != nil {
 		conn = &stat.CounterConnection{
 			Connection:   conn,
@@ -206,6 +210,9 @@ func (t *Handler) HandleConnection(conn net.Conn, destination net.Destination) {
 	link := &transport.Link{
 		Reader: &buf.TimeoutWrapperReader{Reader: buf.NewReader(conn)},
 		Writer: buf.NewWriter(conn),
+	}
+	if batchWriter != nil {
+		link.Writer = batchWriter
 	}
 	if err := t.dispatcher.DispatchLink(ctx, destination, link); err != nil {
 		errors.LogError(ctx, errors.New("connection closed").Base(err))

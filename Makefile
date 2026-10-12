@@ -1,11 +1,11 @@
 # ── Project metadata ──────────────────────────────────────────────────────────
-VERSION      := 1.17.1
+VERSION      := 1.17.2
 ARCH         ?= aarch64-3.10
 BUILD_DATE   := $(shell date -u +%Y-%m-%d)
 
 # ── Embedded Xray ─────────────────────────────────────────────────────────
 # Xray v26.9.9 prerelease, pinned by commit in go.mod.
-XRAY_TAG  := v26.9.9+manager.1
+XRAY_TAG  := v26.9.9+manager.24
 UPDATE_REPOSITORY ?= wad350/vless-manager
 
 # ── Go cross-compile target (Keenetic MT7621 = mipsle softfloat) ──────────────
@@ -13,6 +13,7 @@ GOOS         ?= linux
 GOARCH       ?= arm64
 GOMIPS       ?= softfloat
 CGO          ?= 0
+MIPS_CRYPTO  ?= 1
 # Pin the toolchain required by the bundled Xray source.
 GOTOOLCHAIN  := go1.27.1
 export GOTOOLCHAIN
@@ -30,16 +31,23 @@ ROUTER       ?= root@192.168.13.1
 PORT         ?= 222
 PASS         ?=
 
-.PHONY: all manager ipk clean deploy install-ipk
+.PHONY: all manager ipk clean deploy install-ipk mips-crypto
 
 all: manager ipk
+
+ifeq ($(GOOS)/$(GOARCH)/$(MIPS_CRYPTO),linux/mipsle/1)
+CRYPTO_BUILD_FLAGS := -modfile=$(BUILD_DIR)/mips-crypto/crypto.mod
+manager: mips-crypto
+mips-crypto:
+	GOOS= GOARCH= GOMIPS= CGO_ENABLED= go run ./packaging/mipscrypto -out "$(BUILD_DIR)/mips-crypto"
+endif
 
 # ── vless-manager (with embedded Xray) ────────────────────────────────────
 
 manager:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=$(GOOS) GOARCH=$(GOARCH) GOMIPS=$(GOMIPS) CGO_ENABLED=$(CGO) \
-		go build -trimpath -ldflags="$(LDFLAGS)" \
+		go build $(CRYPTO_BUILD_FLAGS) -trimpath -ldflags="$(LDFLAGS)" \
 		-o $(BUILD_DIR)/vless-manager ./cmd/vless-manager/
 	@echo "Built $(BUILD_DIR)/vless-manager $(VERSION) ($$(du -h $(BUILD_DIR)/vless-manager | cut -f1))"
 	@echo "NOTE: UPX segfaults on MT7621 — leaving uncompressed."

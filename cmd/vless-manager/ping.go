@@ -88,14 +88,14 @@ func pingViaSOCKSContext(ctx context.Context, srv *VLESSServer, socksPort int, t
 		Port:       srv.Port,
 		LatencyMS:  -1,
 	}
-	dialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", socksPort), nil, proxy.Direct)
+	dial, err := socksHTTPDialContext(socksPort, timeout)
 	if err != nil {
 		res.Error = err.Error()
 		return res
 	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			Dial:              dialer.Dial,
+			DialContext:       dial,
 			DisableKeepAlives: true,
 		},
 		Timeout: timeout,
@@ -103,6 +103,7 @@ func pingViaSOCKSContext(ctx context.Context, srv *VLESSServer, socksPort int, t
 			return http.ErrUseLastResponse
 		},
 	}
+	defer client.CloseIdleConnections()
 	if testURL == "" {
 		testURL = defaultPingTestURL
 	}
@@ -125,6 +126,27 @@ func pingViaSOCKSContext(ctx context.Context, srv *VLESSServer, socksPort int, t
 	}
 	res.LatencyMS = time.Since(start).Milliseconds()
 	return res
+}
+
+// Bound both the local connect and SOCKS handshake, and cancel the socket
+// when HTTP abandons a dial instead of leaving a blocked goroutine behind.
+func socksHTTPDialContext(port int, timeout time.Duration) (func(context.Context, string, string) (net.Conn, error), error) {
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	dialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", port), nil, &net.Dialer{Timeout: timeout})
+	if err != nil {
+		return nil, err
+	}
+	contextDialer, ok := dialer.(proxy.ContextDialer)
+	if !ok {
+		return nil, fmt.Errorf("SOCKS dialer does not support cancellation")
+	}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return contextDialer.DialContext(ctx, network, address)
+	}, nil
 }
 
 func pingHTTPStatusOK(status int) bool {

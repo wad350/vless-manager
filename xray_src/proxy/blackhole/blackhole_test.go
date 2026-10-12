@@ -36,6 +36,7 @@ func TestBlackholeHTTPResponse(t *testing.T) {
 	}
 	common.Must(handler.Process(ctx, &link, nil))
 	mb := <-dataCh
+	defer buf.ReleaseMulti(mb)
 	data := make([]byte, mb.Len())
 	mb.Copy(data)
 	resp := common.Must2(http.ReadResponse(bufio.NewReader(bytes.NewBuffer(data)), nil))
@@ -62,13 +63,17 @@ func TestBlackholeCustomResponse(t *testing.T) {
 	reader, writer := pipe.New(pipe.WithoutSizeLimit())
 	var actual buf.MultiBuffer
 	var rerr error
+	done := make(chan struct{})
 	go func() {
 		actual, rerr = reader.ReadMultiBuffer()
+		close(done)
 	}()
 
 	link := transport.Link{Reader: reader, Writer: writer}
 	common.Must(handler.Process(ctx, &link, nil))
+	<-done
 	common.Must(rerr)
+	defer buf.ReleaseMulti(actual)
 
 	if actual.String() != string(expected) {
 		t.Errorf("custom response mismatch")

@@ -26,6 +26,86 @@ func TestBufferClear(t *testing.T) {
 	}
 }
 
+func TestFromOwnedBytes(t *testing.T) {
+	for _, size := range []int{0, 64, Size, 32768, 131073} {
+		storage := make([]byte, size+17)
+		copy(storage, "owned")
+		b := FromOwnedBytes(storage[:size])
+		if b.Len() != int32(size) || !bytes.Equal(b.Bytes(), storage[:size]) {
+			t.Fatal("owned buffer exposed spare capacity or changed data")
+		}
+		if size > 0 {
+			storage[0] = 0xa5
+			if b.Byte(0) != 0xa5 {
+				t.Fatal("ownership transfer copied data")
+			}
+		}
+		b.Release()
+		b.Release()
+		if b.Len() != 0 || b.Bytes() != nil {
+			t.Fatal("release retained owned storage")
+		}
+	}
+}
+
+func TestExtendForReadPreservesStorageAndTrimsTail(t *testing.T) {
+	b := New()
+	defer b.Release()
+	b.Write(bytes.Repeat([]byte{0xa5}, Size))
+	b.Clear()
+	raw := b.ExtendForRead(Size)
+	if raw[Size-1] != 0xa5 {
+		t.Fatal("receive preparation cleared unused storage")
+	}
+	n := copy(raw, "short")
+	b.Resize(0, int32(n))
+	if string(b.Bytes()) != "short" || b.Len() != 5 {
+		t.Fatal("read exposed old bytes or erased received bytes")
+	}
+}
+
+func TestOrdinaryExtendAndResizeStillClearStorage(t *testing.T) {
+	for _, resize := range []bool{false, true} {
+		b := New()
+		b.Write(bytes.Repeat([]byte{0xa5}, Size))
+		b.Clear()
+		if resize {
+			b.Resize(0, 64)
+		} else {
+			b.Extend(64)
+		}
+		if !bytes.Equal(b.Bytes(), make([]byte, 64)) {
+			t.Fatal("ordinary buffer API exposed uninitialized bytes")
+		}
+		b.Release()
+	}
+}
+
+func BenchmarkUDPReadBufferPreparation(b *testing.B) {
+	for _, clear := range []bool{true, false} {
+		name := "read"
+		if clear {
+			name = "clear"
+		}
+		b.Run(name, func(b *testing.B) {
+			buffer := New()
+			defer buffer.Release()
+			b.SetBytes(Size)
+			for i := 0; i < b.N; i++ {
+				buffer.Clear()
+				var raw []byte
+				if clear {
+					raw = buffer.Extend(Size)
+				} else {
+					raw = buffer.ExtendForRead(Size)
+				}
+				copy(raw, "packet")
+				buffer.Resize(0, 6)
+			}
+		})
+	}
+}
+
 func TestBufferIsEmpty(t *testing.T) {
 	buffer := New()
 	defer buffer.Release()

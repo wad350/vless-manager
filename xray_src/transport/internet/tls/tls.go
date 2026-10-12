@@ -185,6 +185,12 @@ func init() {
 }
 
 func GetFingerprint(name string) (fingerprint *utls.ClientHelloID) {
+	if name == "randomized-chacha20" {
+		chacha20Fingerprint.Do(func() {
+			chacha20Fingerprint.id, _ = newChaCha20Fingerprint()
+		})
+		return chacha20Fingerprint.id
+	}
 	if name == "" {
 		return &utls.HelloChrome_Auto
 	}

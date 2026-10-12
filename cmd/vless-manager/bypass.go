@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	_ "embed"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
+
+	"golang.org/x/net/idna"
 )
 
 const bypassWhitelistURL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/main/whitelist.txt"
@@ -88,7 +93,11 @@ func fetchBypassWhitelist(client *http.Client) ([]string, error) {
 }
 
 func fetchBypassWhitelistContext(ctx context.Context, client *http.Client) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, bypassWhitelistURL, nil)
+	return fetchBypassDomainSource(ctx, client, bypassWhitelistURL)
+}
+
+func fetchBypassDomainSource(ctx context.Context, client *http.Client, source string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -101,17 +110,76 @@ func fetchBypassWhitelistContext(ctx context.Context, client *http.Client) ([]st
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("fetch bypass list: HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	const maxSize = 2 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("read bypass list: %w", err)
 	}
-	domains := parseDomainList(string(body))
-	if len(domains) < 100 {
-		return nil, fmt.Errorf("bypass list is unexpectedly small: %d domains", len(domains))
+	if len(body) > maxSize {
+		return nil, fmt.Errorf("bypass list exceeds %d bytes", maxSize)
 	}
+	var domains []string
+	seen := make(map[string]bool)
+	scanner := bufio.NewScanner(strings.NewReader(string(body)))
+	for scanner.Scan() {
+		domain := strings.ToLower(strings.TrimSpace(scanner.Text()))
+		if domain == "" || strings.HasPrefix(domain, "#") {
+			continue
+		}
+		normalized, err := idna.Lookup.ToASCII(domain)
+		if err != nil {
+			return nil, fmt.Errorf("invalid bypass source domain %q: %w", domain, err)
+		}
+		domain = strings.ToLower(normalized)
+		if !validBypassSourceDomain(domain) {
+			return nil, fmt.Errorf("invalid bypass source domain %q", domain)
+		}
+		if !seen[domain] {
+			seen[domain] = true
+			domains = append(domains, domain)
+			if len(domains) > 10000 {
+				return nil, fmt.Errorf("bypass list exceeds 10000 domains")
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("parse bypass source: %w", err)
+	}
+	if len(domains) < 100 {
+		return nil, fmt.Errorf("bypass list has unexpected size: %d domains", len(domains))
+	}
+	slices.Sort(domains)
 	return domains, nil
 }
 
 func directBypassHTTPClient(timeout time.Duration) *http.Client {
-	return subscriptionHTTPClient(timeout, nil)
+	return bypassWANHTTPClient(timeout)
+}
+
+// Source files cannot grant whole TLDs, IP ranges or Xray rule expressions.
+func validBypassSourceDomain(domain string) bool {
+	if len(domain) > 253 || !strings.Contains(domain, ".") || net.ParseIP(domain) != nil || strings.HasSuffix(domain, ".arpa") {
+		return false
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func bypassEffectiveCount(cfg *Config) int {
+	return len(bypassListDomainsFor(cfg))
+}
+
+func bypassListDomainsFor(cfg *Config) []string {
+	domains := bypassDomainsFor(cfg)
+	slices.Sort(domains)
+	return slices.Compact(domains)
 }

@@ -57,8 +57,9 @@ func serviceLogLevelName(level serviceLogLevel) string {
 
 type ringBuffer struct {
 	mu       sync.Mutex
-	buf      []string
 	entries  []serviceLogEntry
+	head     int
+	count    int
 	seq      int
 	minLevel serviceLogLevel
 }
@@ -84,8 +85,7 @@ func field(key string, value any) logField {
 
 func newRingBuffer() *ringBuffer {
 	return &ringBuffer{
-		buf:      make([]string, 0, logBufSize),
-		entries:  make([]serviceLogEntry, 0, logBufSize),
+		entries:  make([]serviceLogEntry, logBufSize),
 		minLevel: serviceLogInfo,
 	}
 }
@@ -102,8 +102,9 @@ func (r *ringBuffer) setLevel(value string) {
 
 func (r *ringBuffer) clear() {
 	r.mu.Lock()
-	r.buf = r.buf[:0]
-	r.entries = r.entries[:0]
+	clear(r.entries)
+	r.head = 0
+	r.count = 0
 	r.mu.Unlock()
 }
 
@@ -140,10 +141,6 @@ func (r *ringBuffer) logEventUnfiltered(level serviceLogLevel, component, event,
 }
 
 func (r *ringBuffer) appendEventLocked(level serviceLogLevel, component, event, message string, fields ...logField) {
-	if len(r.buf) >= logBufSize {
-		r.buf = r.buf[1:]
-		r.entries = r.entries[1:]
-	}
 	r.seq++
 	entry := serviceLogEntry{
 		Seq:       r.seq,
@@ -157,12 +154,22 @@ func (r *ringBuffer) appendEventLocked(level serviceLogLevel, component, event, 
 		entry.Fields = make(map[string]string, len(fields))
 		for _, f := range fields {
 			if f.key != "" && f.value != nil {
-				entry.Fields[f.key] = fmt.Sprint(f.value)
+				if value, ok := f.value.(string); ok {
+					entry.Fields[f.key] = value
+				} else {
+					entry.Fields[f.key] = fmt.Sprint(f.value)
+				}
 			}
 		}
 	}
-	r.entries = append(r.entries, entry)
-	r.buf = append(r.buf, formatServiceLogEntry(entry))
+	index := (r.head + r.count) % logBufSize
+	if r.count == logBufSize {
+		index = r.head
+		r.head = (r.head + 1) % logBufSize
+	} else {
+		r.count++
+	}
+	r.entries[index] = entry
 }
 
 func formatServiceLogEntry(entry serviceLogEntry) string {
@@ -188,47 +195,44 @@ func formatServiceLogEntry(entry serviceLogEntry) string {
 }
 
 func (r *ringBuffer) Lines(since int) ([]string, int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	seq := r.seq
-	if since >= seq || len(r.buf) == 0 {
+	entries, seq := r.Entries(since)
+	if len(entries) == 0 {
 		return nil, seq
 	}
-	start := seq - len(r.buf)
-	if since > start {
-		offset := since - start
-		if offset >= len(r.buf) {
-			return nil, seq
-		}
-		return append([]string(nil), r.buf[offset:]...), seq
+	lines := make([]string, len(entries))
+	for i, entry := range entries {
+		lines[i] = formatServiceLogEntry(entry)
 	}
-	return append([]string(nil), r.buf...), seq
+	return lines, seq
 }
 
 func (r *ringBuffer) Entries(since int) ([]serviceLogEntry, int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	seq := r.seq
-	if since >= seq || len(r.entries) == 0 {
+	if since >= seq || r.count == 0 {
 		return nil, seq
 	}
-	start := seq - len(r.entries)
+	start := seq - r.count
+	offset := 0
 	if since > start {
-		offset := since - start
-		if offset >= len(r.entries) {
-			return nil, seq
-		}
-		return append([]serviceLogEntry(nil), r.entries[offset:]...), seq
+		offset = since - start
 	}
-	return append([]serviceLogEntry(nil), r.entries...), seq
+	entries := make([]serviceLogEntry, r.count-offset)
+	for i := range entries {
+		entries[i] = r.entries[(r.head+offset+i)%logBufSize]
+	}
+	return entries, seq
 }
 
 type ProcessStatus struct {
-	Running    bool   `json:"running"`
-	RouteReady bool   `json:"route_ready"`
-	PID        int    `json:"pid"`
-	UptimeSec  int64  `json:"uptime_sec"`
-	Error      string `json:"error,omitempty"`
+	Generation  uint64 `json:"-"`
+	Running     bool   `json:"running"`
+	RouteReady  bool   `json:"route_ready"`
+	PID         int    `json:"pid"`
+	UptimeSec   int64  `json:"uptime_sec"`
+	Error       string `json:"error,omitempty"`
+	RoutingMode string `json:"routing_mode,omitempty"`
 }
 
 type outboundTrafficSnapshot struct {
@@ -242,17 +246,20 @@ type outboundTrafficSnapshot struct {
 // separate process. This avoids a second runtime and keeps control, traffic
 // accounting and network-engine logs in the same process.
 type ProcessManager struct {
-	mu         sync.Mutex
-	box        engineHandle
-	logs       *ringBuffer
-	running    bool
-	startedAt  time.Time
-	lastErr    string
-	dataDir    string
-	routeHost  string
-	routeReady bool
-	guardOnce  sync.Once
-	opSeq      atomic.Uint64
+	lifecycleMu sync.Mutex
+	mu          sync.Mutex
+	box         engineHandle
+	logs        *ringBuffer
+	running     bool
+	startedAt   time.Time
+	lastErr     string
+	dataDir     string
+	routeHost   string
+	routeReady  bool
+	routeMode   routeMode
+	guardOnce   sync.Once
+	opSeq       atomic.Uint64
+	generation  uint64
 }
 
 func NewProcessManager(dataDir string) *ProcessManager {
@@ -283,6 +290,8 @@ func (pm *ProcessManager) nextOperationID(prefix string) string {
 }
 
 func (pm *ProcessManager) Start(cfg *Config) error {
+	pm.lifecycleMu.Lock()
+	defer pm.lifecycleMu.Unlock()
 	started := time.Now()
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -301,6 +310,10 @@ func (pm *ProcessManager) Start(cfg *Config) error {
 		return fmt.Errorf("resolve active server: %w", err)
 	}
 
+	if err := ensureTProxySupport(run); err != nil {
+		pm.lastErr = err.Error()
+		return fmt.Errorf("TPROXY unavailable: %w", err)
+	}
 	data, err := generateXrayConfig(cfg, dialServer)
 	if err != nil {
 		return fmt.Errorf("generate Xray config: %w", err)
@@ -317,7 +330,7 @@ func (pm *ProcessManager) Start(cfg *Config) error {
 		return err
 	}
 
-	bypassCount := len(bypassDomainsFor(cfg))
+	bypassCount := bypassEffectiveCount(cfg)
 	if err := EnableGlobalRoute(dialIP); err != nil {
 		closeErr := bh.Close()
 		pm.lastErr = err.Error()
@@ -332,15 +345,18 @@ func (pm *ProcessManager) Start(cfg *Config) error {
 
 	pm.box = bh
 	pm.running = true
+	pm.generation++
 	pm.startedAt = time.Now()
 	pm.lastErr = ""
 	pm.routeHost = dialIP
 	pm.routeReady = true
+	pm.routeMode = routeTPROXY
 	pm.guardOnce.Do(func() { go pm.routeGuard() })
 	pm.event(serviceLogInfo, "routing", "global.enabled",
 		"глобальная маршрутизация включена",
 		field("server_address", srv.Address),
 		field("dial_ip", dialIP),
+		field("routing_mode", routeTPROXY),
 		field("bypass_domains", bypassCount))
 	pm.event(serviceLogInfo, "manager", "vpn.started",
 		"VPN запущен и направляет трафик",
@@ -354,6 +370,8 @@ func (pm *ProcessManager) Start(cfg *Config) error {
 }
 
 func (pm *ProcessManager) Stop() error {
+	pm.lifecycleMu.Lock()
+	defer pm.lifecycleMu.Unlock()
 	pm.mu.Lock()
 	if !pm.running || pm.box == nil {
 		pm.mu.Unlock()
@@ -364,6 +382,7 @@ func (pm *ProcessManager) Stop() error {
 	bh := pm.box
 	pm.box = nil
 	pm.running = false
+	pm.generation++
 	pm.routeHost = ""
 	pm.routeReady = false
 	pm.mu.Unlock()
@@ -381,10 +400,23 @@ func (pm *ProcessManager) Stop() error {
 	return nil
 }
 
-func (pm *ProcessManager) TunRunning() bool {
+func (pm *ProcessManager) TunnelRunning() bool {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	return pm.running
+}
+
+func (pm *ProcessManager) UpdateBypassRules(cfg *Config) error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if !pm.running || pm.box == nil {
+		return nil
+	}
+	updater, ok := pm.box.(interface{ UpdateBypassRules(*Config) error })
+	if !ok {
+		return fmt.Errorf("running engine does not support routing updates")
+	}
+	return updater.UpdateBypassRules(cfg)
 }
 
 func (pm *ProcessManager) TrafficSnapshot() (outboundTrafficSnapshot, bool) {
@@ -400,12 +432,14 @@ func (pm *ProcessManager) Status() ProcessStatus {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	s := ProcessStatus{
+		Generation: pm.generation,
 		Running:    pm.running,
 		RouteReady: pm.routeReady,
 		Error:      pm.lastErr,
 	}
 	if pm.running {
 		s.UptimeSec = int64(time.Since(pm.startedAt).Seconds())
+		s.RoutingMode = string(pm.routeMode)
 	}
 	return s
 }

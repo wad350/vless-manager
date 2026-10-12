@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	"golang.org/x/net/proxy"
 )
 
 // Auto-failover controller. Decides VPN on/off based on probes that always
@@ -57,7 +55,8 @@ type failoverController struct {
 
 	// nextSwapAttempt — earliest time healthTick is allowed to call
 	// chooseAlternativeServer again.
-	nextSwapAttempt time.Time
+	nextSwapAttempt  time.Time
+	healthGeneration uint64
 
 	stopCh   chan struct{}
 	reloadCh chan struct{}
@@ -181,10 +180,17 @@ func (fc *failoverController) CheckTunnelNow() {
 func (fc *failoverController) State() FailoverState {
 	fc.mu.Lock()
 	state := fc.state
+	generation := fc.healthGeneration
 	fc.mu.Unlock()
 	// Process state is authoritative. In particular, a manual start/stop must
 	// be visible without waiting for either automation ticker.
-	state.VPNOn = fc.statusFn().Running
+	status := fc.statusFn()
+	state.VPNOn = status.Running
+	if !status.Running || status.Generation != generation {
+		state.VPNHealthOK = false
+		state.VPNHealthCheck = time.Time{}
+		state.VPNHealthLatencyMS = -1
+	}
 	return state
 }
 
@@ -317,7 +323,11 @@ func (fc *failoverController) Stop() {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 	if fc.running {
-		close(fc.stopCh)
+		select {
+		case <-fc.stopCh:
+		default:
+			close(fc.stopCh)
+		}
 	}
 }
 
@@ -520,7 +530,8 @@ func (fc *failoverController) healthTick() {
 	if !fc.TunnelFailoverEnabled() {
 		return
 	}
-	if !fc.statusFn().Running {
+	tunnel := fc.statusFn()
+	if !tunnel.Running {
 		fc.mu.Lock()
 		fc.state.VPNOn = false
 		fc.state.VPNHealthOK = false
@@ -540,6 +551,15 @@ func (fc *failoverController) healthTick() {
 	latencyMS := time.Since(started).Milliseconds()
 
 	fc.mu.Lock()
+	current := fc.statusFn()
+	if !fc.tunnelEnabled || !current.Running || current.Generation != tunnel.Generation {
+		fc.mu.Unlock()
+		return
+	}
+	if fc.healthGeneration != tunnel.Generation {
+		fc.state.VPNHealthFails = 0
+	}
+	fc.healthGeneration = tunnel.Generation
 	fc.state.VPNOn = true
 	fc.state.VPNHealthOK = ok
 	fc.state.VPNHealthCheck = time.Now()
@@ -580,6 +600,11 @@ func (fc *failoverController) healthTick() {
 	// or stale when automatic VPN on/off is disabled.
 	whR, whitelistOK := fc.runProbesFn(st.WhitelistProbes, st.ProbeTimeout())
 	fc.mu.Lock()
+	current = fc.statusFn()
+	if !fc.tunnelEnabled || !current.Running || current.Generation != tunnel.Generation {
+		fc.mu.Unlock()
+		return
+	}
 	fc.state.WhitelistProbes = whR
 	fc.state.WhitelistOK = whitelistOK
 	fc.mu.Unlock()
@@ -620,21 +645,21 @@ func (fc *failoverController) healthTick() {
 // that Xray exposes alongside the redirect inbound. This verifies that the
 // VLESS tunnel is actually working, independent of ip-rule routing.
 func vpnProbe(url string, timeout time.Duration) (bool, error) {
-	dialer, err := proxy.SOCKS5("tcp",
-		fmt.Sprintf("127.0.0.1:%d", socksHealthPort), nil, proxy.Direct)
+	dial, err := socksHTTPDialContext(socksHealthPort, timeout)
 	if err != nil {
 		return false, err
 	}
 	client := &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			Dial:              dialer.Dial,
+			DialContext:       dial,
 			DisableKeepAlives: true,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
+	defer client.CloseIdleConnections()
 	const attempts = 3
 	var wg sync.WaitGroup
 	results := make(chan error, attempts)

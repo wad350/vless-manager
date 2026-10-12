@@ -3,6 +3,7 @@ package encoding
 import (
 	"context"
 	"io"
+	"sync"
 
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
@@ -23,12 +24,13 @@ type MultiHunkReaderWriter struct {
 	hc     MultiHunkConn
 	cancel context.CancelFunc
 	done   *done.Instance
+	sendMu sync.Mutex
 
 	buf [][]byte
 }
 
 func NewMultiHunkReadWriter(hc MultiHunkConn, cancel context.CancelFunc) *MultiHunkReaderWriter {
-	return &MultiHunkReaderWriter{hc, cancel, done.New(), nil}
+	return &MultiHunkReaderWriter{hc: hc, cancel: cancel, done: done.New()}
 }
 
 func NewMultiHunkConn(hc MultiHunkConn, cancel context.CancelFunc, trustedXForwardedFor []string) net.Conn {
@@ -77,19 +79,20 @@ func (h *MultiHunkReaderWriter) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		if cap(b) >= buf.Size {
 			mb = append(mb, buf.NewExisted(b))
 		} else {
-			nb := buf.New()
-			nb.Extend(int32(len(b)))
-			copy(nb.Bytes(), b)
-
-			mb = append(mb, nb)
+			mb = append(mb, buf.FromBytes(b))
 		}
 
 	}
+	h.buf = nil
 	return mb, nil
 }
 
 func (h *MultiHunkReaderWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	defer buf.ReleaseMulti(mb)
+	if h.cancel == nil {
+		h.sendMu.Lock()
+		defer h.sendMu.Unlock()
+	}
 	if h.done.Done() {
 		return io.ErrClosedPipe
 	}
@@ -110,12 +113,16 @@ func (h *MultiHunkReaderWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 }
 
 func (h *MultiHunkReaderWriter) Close() error {
+	_ = h.done.Close()
 	if h.cancel != nil {
 		h.cancel()
+		return nil
 	}
 	if sc, match := h.hc.(StreamCloser); match {
+		h.sendMu.Lock()
+		defer h.sendMu.Unlock()
 		return sc.CloseSend()
 	}
 
-	return h.done.Close()
+	return nil
 }

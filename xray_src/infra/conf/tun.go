@@ -1,3 +1,5 @@
+//go:build xray_tun
+
 package conf
 
 import (
@@ -10,6 +12,10 @@ import (
 	"github.com/xtls/xray-core/proxy/tun"
 	"google.golang.org/protobuf/proto"
 )
+
+func init() {
+	inboundConfigLoader.cache["tun"] = func() interface{} { return new(TunConfig) }
+}
 
 type TunConfig struct {
 	Name                   string   `json:"name"`

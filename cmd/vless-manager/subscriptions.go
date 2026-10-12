@@ -15,11 +15,10 @@ import (
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/net/proxy"
 )
 
 var subscriptionDeviceID = ephemeralSubscriptionDeviceID()
@@ -322,14 +321,14 @@ func (s *apiServer) fetchSubscriptionURLContext(ctx context.Context, url string)
 func (s *apiServer) fetchSubscriptionURLWithTimeoutContext(ctx context.Context, url string, timeout time.Duration) (*Subscription, error) {
 	st := s.settingsSnapshot()
 	vpnState := s.failover.State()
-	vpnReady := s.pm.Status().Running && s.pm.TunRunning() && vpnState.VPNHealthOK
+	vpnReady := s.pm.Status().Running && s.pm.TunnelRunning() && vpnState.VPNHealthOK
 	host := "unknown"
 	if parsed, err := neturl.Parse(url); err == nil && parsed.Host != "" {
 		host = parsed.Host
 	}
 	opID := s.pm.nextOperationID("subfetch")
 	if st.SubscriptionPreferVPN && vpnReady {
-		dialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", socksHealthPort), nil, proxy.Direct)
+		dial, err := socksHTTPDialContext(socksHealthPort, timeout)
 		if err == nil {
 			s.pm.event(serviceLogDebug, "subscription", "fetch.started",
 				"загрузка подписки через рабочий VPN",
@@ -337,7 +336,7 @@ func (s *apiServer) fetchSubscriptionURLWithTimeoutContext(ctx context.Context, 
 				field("host", host),
 				field("transport", "vpn"),
 				field("timeout_ms", timeout.Milliseconds()))
-			sub, fetchErr := fetchSubscriptionWithClientContext(ctx, url, subscriptionHTTPClient(timeout, dialer.Dial))
+			sub, fetchErr := fetchSubscriptionWithClientContext(ctx, url, subscriptionHTTPClient(timeout, dial))
 			if fetchErr == nil {
 				s.pm.event(serviceLogDebug, "subscription", "fetch.succeeded",
 					"подписка загружена",
@@ -364,7 +363,7 @@ func (s *apiServer) fetchSubscriptionURLWithTimeoutContext(ctx context.Context, 
 		field("host", host),
 		field("transport", "wan"),
 		field("timeout_ms", timeout.Milliseconds()))
-	sub, err := fetchSubscriptionWithClientContext(ctx, url, subscriptionHTTPClient(timeout, wanDialer(timeout).Dial))
+	sub, err := fetchSubscriptionWithClientContext(ctx, url, subscriptionHTTPClient(timeout, wanDialContext(timeout)))
 	if err != nil {
 		s.pm.event(serviceLogWarn, "subscription", "fetch.failed",
 			"подписка не загружена",
@@ -384,15 +383,16 @@ func (s *apiServer) fetchSubscriptionURLWithTimeoutContext(ctx context.Context, 
 	return sub, nil
 }
 
-func subscriptionHTTPClient(timeout time.Duration, dial func(string, string) (net.Conn, error)) *http.Client {
+func subscriptionHTTPClient(timeout time.Duration, dial func(context.Context, string, string) (net.Conn, error)) *http.Client {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: false},
+		DisableKeepAlives: true,
 	}
 	if dial != nil {
-		transport.Dial = dial
+		transport.DialContext = dial
 	}
 	return &http.Client{Timeout: timeout, Transport: transport}
 }
@@ -402,6 +402,7 @@ func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription
 }
 
 func fetchSubscriptionWithClientContext(ctx context.Context, url string, client *http.Client) (*Subscription, error) {
+	defer client.CloseIdleConnections()
 	if subscriptionDeviceID == "" {
 		return nil, fmt.Errorf("subscription device ID is not initialized")
 	}
@@ -824,12 +825,12 @@ func httpClientViaVLESS(srv *VLESSServer, timeout, startupWait time.Duration, lo
 		startupWait = 300 * time.Millisecond
 	}
 	time.Sleep(startupWait)
-	dialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", port), nil, proxy.Direct)
+	dial, err := socksHTTPDialContext(port, timeout)
 	if err != nil {
 		_ = box.Close()
 		return nil, nil, err
 	}
-	return subscriptionHTTPClient(timeout, dialer.Dial), box, nil
+	return subscriptionHTTPClient(timeout, dial), box, nil
 }
 
 func isPlaceholderServer(srv *VLESSServer) bool {
@@ -877,7 +878,10 @@ func loadSubscriptions(path string) ([]*Subscription, error) {
 	// upgrade subscription IDs to stable URL-hash form for re-imports.
 	seenSubID := map[string]bool{}
 	uniqueSubs := make([]*Subscription, 0, len(subs))
-	for _, sub := range subs {
+	for i, sub := range subs {
+		if sub == nil {
+			return nil, fmt.Errorf("subscription entry %d is null", i)
+		}
 		sub.URL = normalizeSubscriptionURL(sub.URL)
 		sub.ID = subscriptionID(sub.URL)
 		if seenSubID[sub.ID] {
@@ -977,5 +981,30 @@ func parseSubUserInfo(header string) *SubUserInfo {
 }
 
 func saveSubscriptions(path string, subs []*Subscription) error {
+	if data, err := os.ReadFile(path); err == nil {
+		var previous []*Subscription
+		if json.Unmarshal(data, &previous) == nil && reflect.DeepEqual(
+			subscriptionPersistentState(previous), subscriptionPersistentState(subs)) {
+			return nil
+		}
+	}
 	return writeJSONAtomic(path, subs)
+}
+
+func subscriptionPersistentState(subs []*Subscription) []*Subscription {
+	out := cloneSubscriptions(subs)
+	for _, sub := range out {
+		if sub == nil {
+			continue
+		}
+		// Live diagnostics and usage remain in RAM. Persist credentials,
+		// catalogs, user choices, quotas and expiry immediately when changed.
+		sub.UpdatedAt = time.Time{}
+		sub.Error = ""
+		if sub.UserInfo != nil {
+			sub.UserInfo.Upload = 0
+			sub.UserInfo.Download = 0
+		}
+	}
+	return out
 }

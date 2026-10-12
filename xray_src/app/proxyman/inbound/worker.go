@@ -2,6 +2,7 @@ package inbound
 
 import (
 	"context"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +12,7 @@ import (
 	c "github.com/xtls/xray-core/common/ctx"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
+	protocoludp "github.com/xtls/xray-core/common/protocol/udp"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/signal/done"
@@ -170,7 +172,7 @@ func (w *tcpWorker) Port() net.Port {
 }
 
 type udpConn struct {
-	lastActivityTime int64 // in seconds
+	lastActivityTime atomic.Int32 // epoch seconds, modulo 2^32
 	reader           buf.Reader
 	writer           buf.Writer
 	output           func([]byte) (int, error)
@@ -179,16 +181,14 @@ type udpConn struct {
 	done             *done.Instance
 	uplink           stats.Counter
 	downlink         stats.Counter
-	inactive         bool
+	ctx              context.Context
 	cancel           context.CancelFunc
 }
 
-func (c *udpConn) setInactive() {
-	c.inactive = true
-}
+var yieldUDPOverflow = os.Getenv("XRAY_UDP_YIELD_OVERFLOW") == "on"
 
 func (c *udpConn) updateActivity() {
-	atomic.StoreInt64(&c.lastActivityTime, time.Now().Unix())
+	c.lastActivityTime.Store(int32(time.Now().Unix()))
 }
 
 // ReadMultiBuffer implements buf.Reader
@@ -198,6 +198,7 @@ func (c *udpConn) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		return nil, err
 	}
 	c.updateActivity()
+	protocoludp.RecordDispatched(len(mb))
 
 	if c.uplink != nil {
 		c.uplink.Add(int64(mb.Len()))
@@ -213,6 +214,7 @@ func (c *udpConn) Read(buf []byte) (int, error) {
 // Write implements io.Writer.
 func (c *udpConn) Write(buf []byte) (int, error) {
 	n, err := c.output(buf)
+	protocoludp.RecordReply(err)
 	if c.downlink != nil {
 		c.downlink.Add(int64(n))
 	}
@@ -228,6 +230,7 @@ func (c *udpConn) Close() error {
 	}
 	common.Must(c.done.Close())
 	common.Must(common.Close(c.writer))
+	common.Must(common.Interrupt(c.reader))
 	return nil
 }
 
@@ -272,6 +275,7 @@ type udpWorker struct {
 
 	checker    *task.Periodic
 	activeConn map[connID]*udpConn
+	closed     bool
 
 	ctx  context.Context
 	cone bool
@@ -280,13 +284,21 @@ type udpWorker struct {
 func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 	w.Lock()
 	defer w.Unlock()
+	if w.closed {
+		return nil, false
+	}
 
 	if conn, found := w.activeConn[id]; found && !conn.done.Done() {
 		conn.updateActivity()
 		return conn, true
 	}
 
-	pReader, pWriter := pipe.New(pipe.DiscardOverflow(), pipe.WithSizeLimit(16*1024))
+	options := []pipe.Option{pipe.DiscardOverflow(), pipe.WithSizeLimit(16 * 1024), pipe.OnDiscard(protocoludp.RecordPipeDrop)}
+	if yieldUDPOverflow {
+		options = append(options, pipe.YieldOverflow())
+	}
+	pReader, pWriter := pipe.New(options...)
+	ctx, cancel := context.WithCancel(w.ctx)
 	conn := &udpConn{
 		reader: pReader,
 		writer: pWriter,
@@ -304,6 +316,8 @@ func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 		done:     done.New(),
 		uplink:   w.uplinkCounter,
 		downlink: w.downlinkCounter,
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 	w.activeConn[id] = conn
 
@@ -311,17 +325,28 @@ func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 	return conn, false
 }
 
-func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest net.Destination) {
+func (w *udpWorker) connectionID(source, originalDest net.Destination) connID {
 	id := connID{
 		src: source,
 	}
+	// Transparent sessions are routed once. Sharing one across destinations
+	// can send a new DNS query to the previous resolver or bypass the wrong rule.
+	if originalDest.IsValid() && (!w.cone || getTProxyType(w.stream) == internet.SocketConfig_TProxy) {
+		id.dest = originalDest
+	}
+	return id
+}
+
+func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest net.Destination) {
+	id := w.connectionID(source, originalDest)
 	if originalDest.IsValid() {
-		if !w.cone {
-			id.dest = originalDest
-		}
 		b.UDP = &originalDest
 	}
 	conn, existing := w.getConnection(id)
+	if conn == nil {
+		b.Release()
+		return
+	}
 
 	// payload will be discarded in pipe is full.
 	conn.writer.WriteMultiBuffer(buf.MultiBuffer{b})
@@ -330,8 +355,7 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
 		common.Must(w.checker.Start())
 
 		go func() {
-			ctx, cancel := context.WithCancel(w.ctx)
-			conn.cancel = cancel
+			ctx := conn.ctx
 			sid := session.NewID()
 			ctx = c.ContextWithID(ctx, sid)
 
@@ -362,18 +386,17 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
 				errors.LogInfoInner(ctx, err, "connection ends")
 			}
 			conn.Close()
-			// conn not removed by checker TODO may be lock worker here is better
-			if !conn.inactive {
-				conn.setInactive()
-				w.removeConn(id)
-			}
+			w.removeConn(id, conn)
 		}()
 	}
 }
 
-func (w *udpWorker) removeConn(id connID) {
+func (w *udpWorker) removeConn(id connID, conn *udpConn) {
 	w.Lock()
-	delete(w.activeConn, id)
+	// An expired flow may already have a replacement with the same tuple.
+	if w.activeConn[id] == conn {
+		delete(w.activeConn, id)
+	}
 	w.Unlock()
 }
 
@@ -385,20 +408,21 @@ func (w *udpWorker) handlePackets() {
 }
 
 func (w *udpWorker) clean() error {
-	nowSec := time.Now().Unix()
+	nowSec := int32(time.Now().Unix())
 	w.Lock()
 	defer w.Unlock()
+	if w.closed {
+		return errors.New("UDP worker closed")
+	}
 
 	if len(w.activeConn) == 0 {
 		return errors.New("no more connections. stopping...")
 	}
 
 	for addr, conn := range w.activeConn {
-		if nowSec-atomic.LoadInt64(&conn.lastActivityTime) > 2*60 {
-			if !conn.inactive {
-				conn.setInactive()
-				delete(w.activeConn, addr)
-			}
+		// Modular subtraction keeps the short idle interval valid across epoch wrap.
+		if nowSec-conn.lastActivityTime.Load() > 2*60 {
+			delete(w.activeConn, addr)
 			conn.Close()
 		}
 	}
@@ -412,6 +436,7 @@ func (w *udpWorker) clean() error {
 
 func (w *udpWorker) Start() error {
 	w.activeConn = make(map[connID]*udpConn, 16)
+	w.closed = false
 	ctx := context.Background()
 	h, err := udp.ListenUDP(ctx, w.address, w.port, w.stream, udp.HubCapacity(256))
 	if err != nil {
@@ -433,8 +458,18 @@ func (w *udpWorker) Start() error {
 func (w *udpWorker) Close() error {
 	w.Lock()
 	defer w.Unlock()
+	if w.closed {
+		return nil
+	}
+	w.closed = true
 
 	var errs []interface{}
+	for id, conn := range w.activeConn {
+		if err := conn.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		delete(w.activeConn, id)
+	}
 
 	if w.hub != nil {
 		if err := w.hub.Close(); err != nil {

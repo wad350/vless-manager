@@ -69,6 +69,8 @@ type AppSettings struct {
 
 	// --- Xray ---
 	LogLevel string `json:"log_level"` // error|warn|info|debug|trace
+	// Opt-in replacement of browser camouflage for CPUs without AES acceleration.
+	TLSClientProfile string `json:"tls_client_profile"` // server|randomized-chacha20
 	// ServiceLogLevel controls vless-manager's own operational log. At debug
 	// it includes every ping and subscription download attempt.
 	ServiceLogLevel string `json:"service_log_level"` // error|warn|info|debug|trace
@@ -130,8 +132,9 @@ func defaultSettings() AppSettings {
 		PingCacheMaxAgeMin: 60,
 		PingFailoverOrder:  "active_first",
 
-		LogLevel:        "error",
-		ServiceLogLevel: "info",
+		LogLevel:         "error",
+		TLSClientProfile: "server",
+		ServiceLogLevel:  "info",
 
 		BypassRouteRussia: true,
 		BypassDomains:     []string{},
@@ -139,6 +142,9 @@ func defaultSettings() AppSettings {
 }
 
 func (s AppSettings) validate() error {
+	if !oneOf(s.TLSClientProfile, "server", "randomized-chacha20") {
+		return fmt.Errorf("invalid tls_client_profile %q", s.TLSClientProfile)
+	}
 	type intRule struct {
 		name     string
 		value    int
@@ -327,6 +333,10 @@ func (s *AppSettings) fillDefaults() bool {
 	}
 	if s.PingSelectionMode == "" {
 		s.PingSelectionMode = d.PingSelectionMode
+		changed = true
+	}
+	if s.TLSClientProfile == "" {
+		s.TLSClientProfile = d.TLSClientProfile
 		changed = true
 	}
 	// Cached ping results are retained for status display only. Connection and

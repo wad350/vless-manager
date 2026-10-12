@@ -25,8 +25,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"golang.org/x/net/proxy"
 )
 
 const (
@@ -92,7 +90,7 @@ type appUpdater struct {
 func newAppUpdater(api *apiServer) *appUpdater {
 	u := &appUpdater{
 		api:  api,
-		path: filepath.Join(filepath.Dir(api.cfgPath), "update-status.json"),
+		path: api.runtimePath("update-status.json"),
 		status: UpdateStatus{
 			CurrentVersion: Version,
 			State:          "idle",
@@ -113,7 +111,7 @@ func (u *appUpdater) snapshot() UpdateStatus {
 func (u *appUpdater) begin(state string) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.busy {
+	if u.busy || u.status.State == "restarting" {
 		return false
 	}
 	now := time.Now()
@@ -142,6 +140,10 @@ func (u *appUpdater) finish(status UpdateStatus) {
 
 func (u *appUpdater) load() {
 	data, err := os.ReadFile(u.path)
+	if errors.Is(err, os.ErrNotExist) {
+		// Read legacy state without writing back to its persistent location.
+		data, err = os.ReadFile(filepath.Join(filepath.Dir(u.api.cfgPath), "update-status.json"))
+	}
 	if err != nil {
 		return
 	}
@@ -484,6 +486,10 @@ func (u *appUpdater) installStarted(ctx context.Context) (UpdateStatus, error) {
 	}
 
 	latest, _ := normalizedVersion(release.TagName)
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(updatePath)
+		return u.failInstall(err)
+	}
 	if err := schedulePackageUpdate(updatePath); err != nil {
 		_ = os.Remove(updatePath)
 		return u.failInstall(err)
@@ -551,12 +557,14 @@ func (u *appUpdater) withPreferredTransport(
 	timeout time.Duration,
 	fn func(*http.Client) error,
 ) (string, error) {
-	if u.api.pm.Status().Running && u.api.pm.TunRunning() {
+	if u.api.pm.Status().Running && u.api.pm.TunnelRunning() {
 		u.setTransport("vpn")
-		dialer, err := proxy.SOCKS5("tcp",
-			fmt.Sprintf("127.0.0.1:%d", socksHealthPort), nil, proxy.Direct)
+		dial, err := socksHTTPDialContext(socksHealthPort, timeout)
 		if err == nil {
-			if err = fn(updateHTTPClient(timeout, dialer.Dial)); err == nil {
+			client := updateHTTPClient(timeout, dial)
+			err = fn(client)
+			client.CloseIdleConnections()
+			if err == nil {
 				return "vpn", nil
 			}
 			u.api.pm.event(serviceLogWarn, "update", "request.fallback",
@@ -565,15 +573,17 @@ func (u *appUpdater) withPreferredTransport(
 		}
 	}
 	u.setTransport("wan")
-	if err := fn(updateHTTPClient(timeout, wanDial(timeout))); err != nil {
+	client := updateHTTPClient(timeout, wanDialContext(timeout))
+	defer client.CloseIdleConnections()
+	if err := fn(client); err != nil {
 		return "wan", err
 	}
 	return "wan", nil
 }
 
-func updateHTTPClient(timeout time.Duration, dial func(string, string) (net.Conn, error)) *http.Client {
+func updateHTTPClient(timeout time.Duration, dial func(context.Context, string, string) (net.Conn, error)) *http.Client {
 	transport := &http.Transport{
-		Dial:                  dial,
+		DialContext:           dial,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 20 * time.Second,
 		DisableKeepAlives:     true,
@@ -943,7 +953,7 @@ func schedulePackageUpdate(updatePath string) error {
 		return fmt.Errorf("opkg не найден: %w", err)
 	}
 	scriptPath := "/tmp/vless-manager-apply-update.sh"
-	logPath := "/opt/var/log/vless-manager-update.log"
+	logPath := "/tmp/vless-manager-update.log"
 	script := fmt.Sprintf(`#!/bin/sh
 sleep 2
 PKG=%s

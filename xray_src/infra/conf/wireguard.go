@@ -1,3 +1,5 @@
+//go:build xray_wireguard
+
 package conf
 
 import (
@@ -54,6 +56,11 @@ func (c *WireGuardPeerConfig) Build() (*wireguard.PeerConfig, error) {
 	}
 
 	return config, nil
+}
+
+func init() {
+	inboundConfigLoader.cache["wireguard"] = func() interface{} { return &WireGuardConfig{IsClient: false} }
+	outboundConfigLoader.cache["wireguard"] = func() interface{} { return &WireGuardConfig{IsClient: true} }
 }
 
 type WireGuardConfig struct {

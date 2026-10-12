@@ -192,7 +192,7 @@ func TestProcessLoggingBufferAndUtilities(t *testing.T) {
 	if pm.nextOperationID("op") != "op-000001" || pm.nextOperationID("op") != "op-000002" {
 		t.Fatal("operation sequence is not monotonic")
 	}
-	if pm.TunRunning() || pm.Status().Running {
+	if pm.TunnelRunning() || pm.Status().Running {
 		t.Fatal("new process manager must be stopped")
 	}
 	if err := pm.Stop(); err != nil {
@@ -254,16 +254,11 @@ func TestBypassFetchValidation(t *testing.T) {
 }
 
 func TestRoutingAndStringHelpers(t *testing.T) {
-	AddPingBypass("127.0.0.1")
-	ClearPingBypasses()
 	if got := ResolveAddrs("127.0.0.1"); len(got) != 1 || got[0] != "127.0.0.1" {
 		t.Fatalf("IPv4 resolve=%v", got)
 	}
 	if got := ResolveAddrs("::1"); got != nil {
 		t.Fatalf("IPv6 resolve=%v", got)
-	}
-	if err := waitForTun(time.Millisecond); err == nil {
-		t.Fatal("missing tun unexpectedly found")
 	}
 	if err := requireRouteCommand("test", "command-that-does-not-exist"); err == nil {
 		t.Fatal("missing route command unexpectedly succeeded")

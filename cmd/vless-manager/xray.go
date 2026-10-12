@@ -9,12 +9,13 @@ import (
 
 const (
 	tunIface        = "tun0"
-	tunAddr         = "198.18.0.1/30"
-	tunMTU          = 1500
 	socksHealthPort = 7891
+	tcpRedirectPort = 7892
 )
 
 func generateXrayConfig(cfg *Config, srv *VLESSServer) ([]byte, error) {
+	profile := serverWithTLSProfile(*srv, cfg.Settings.TLSClientProfile)
+	srv = &profile
 	config, err := xrayBaseConfig(srv)
 	if err != nil {
 		return nil, err
@@ -22,16 +23,29 @@ func generateXrayConfig(cfg *Config, srv *VLESSServer) ([]byte, error) {
 	config["log"] = map[string]any{"loglevel": xrayLogLevel(cfg.Settings.LogLevel), "access": "none"}
 	config["inbounds"] = []any{
 		map[string]any{
-			"protocol": "tun", "tag": "tun-in",
-			"settings": map[string]any{"name": tunIface, "mtu": tunMTU, "gateway": []string{tunAddr}},
-			"sniffing": map[string]any{"enabled": true, "destOverride": []string{"http", "tls", "quic"}, "routeOnly": true},
+			"protocol": "dokodemo-door", "tag": "tproxy-in", "listen": "0.0.0.0", "port": tcpRedirectPort,
+			"settings": map[string]any{"network": "tcp,udp", "followRedirect": true},
+			// The mark also covers TCP replies and forged UDP replies, avoiding
+			// recapture of proxy responses in the router's OUTPUT chain.
+			"streamSettings": map[string]any{"sockopt": map[string]any{"tproxy": "tproxy", "mark": WANFwmark}},
+			"sniffing":       map[string]any{"enabled": true, "destOverride": []string{"http", "tls", "quic"}, "routeOnly": true},
 		},
 		xraySOCKSInbound(socksHealthPort),
 	}
 	// Client DNS to the router remains local. Public TCP/UDP DNS follows the
 	// same proxy policy as other traffic, with no DNS interception or FakeIP.
 	routing := config["routing"].(map[string]any)
-	rules := []map[string]any{}
+	routing["rules"] = xrayRoutingRules(cfg, routing["rules"].([]map[string]any)[0])
+	return json.MarshalIndent(config, "", "  ")
+}
+
+func xrayRoutingRules(cfg *Config, proxyRule map[string]any) []map[string]any {
+	// In-process measurements must use the tunnel even for bypass domains.
+	testRule := map[string]any{"inboundTag": []string{xrayTunnelTestTag, "socks-health"}}
+	for key, value := range proxyRule {
+		testRule[key] = value
+	}
+	rules := []map[string]any{testRule}
 	if bypass := bypassDomainsFor(cfg); len(bypass) > 0 {
 		domains := make([]string, 0, len(bypass))
 		for _, domain := range bypass {
@@ -40,8 +54,21 @@ func generateXrayConfig(cfg *Config, srv *VLESSServer) ([]byte, error) {
 		rules = append(rules, map[string]any{"type": "field", "domain": domains, "outboundTag": "direct"})
 	}
 	rules = append(rules, map[string]any{"type": "field", "ip": privateCIDRs, "outboundTag": "direct"})
-	routing["rules"] = append(rules, routing["rules"].([]map[string]any)...)
-	return json.MarshalIndent(config, "", "  ")
+	return append(rules, proxyRule)
+}
+
+func serverWithTLSProfile(server VLESSServer, profile string) VLESSServer {
+	if profile != "randomized-chacha20" {
+		return server
+	}
+	server = cloneVLESSServer(server)
+	if server.Security == "tls" || server.Security == "reality" {
+		server.Fingerprint = profile
+	}
+	for i := range server.Members {
+		server.Members[i] = serverWithTLSProfile(server.Members[i], profile)
+	}
+	return server
 }
 
 func xrayLogLevel(level string) string {

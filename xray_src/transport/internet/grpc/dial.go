@@ -56,22 +56,25 @@ func dialgRPC(ctx context.Context, dest net.Destination, streamSettings *interne
 		return nil, errors.New("Cannot dial gRPC").Base(err)
 	}
 	client := encoding.NewGRPCServiceClient(conn)
+	streamCtx, cancel := context.WithCancel(ctx)
 	if grpcSettings.MultiMode {
 		errors.LogDebug(ctx, "using gRPC multi mode service name: `"+grpcSettings.getServiceName()+"` stream name: `"+grpcSettings.getTunMultiStreamName()+"`")
-		grpcService, err := client.(encoding.GRPCServiceClientX).TunMultiCustomName(ctx, grpcSettings.getServiceName(), grpcSettings.getTunMultiStreamName())
+		grpcService, err := client.(encoding.GRPCServiceClientX).TunMultiCustomName(streamCtx, grpcSettings.getServiceName(), grpcSettings.getTunMultiStreamName())
 		if err != nil {
+			cancel()
 			return nil, errors.New("Cannot dial gRPC").Base(err)
 		}
-		return encoding.NewMultiHunkConn(grpcService, nil, nil), nil
+		return encoding.NewMultiHunkConn(grpcService, cancel, nil), nil
 	}
 
 	errors.LogDebug(ctx, "using gRPC tun mode service name: `"+grpcSettings.getServiceName()+"` stream name: `"+grpcSettings.getTunStreamName()+"`")
-	grpcService, err := client.(encoding.GRPCServiceClientX).TunCustomName(ctx, grpcSettings.getServiceName(), grpcSettings.getTunStreamName())
+	grpcService, err := client.(encoding.GRPCServiceClientX).TunCustomName(streamCtx, grpcSettings.getServiceName(), grpcSettings.getTunStreamName())
 	if err != nil {
+		cancel()
 		return nil, errors.New("Cannot dial gRPC").Base(err)
 	}
 
-	return encoding.NewHunkConn(grpcService, nil, nil), nil
+	return encoding.NewHunkConn(grpcService, cancel, nil), nil
 }
 
 func getGrpcClient(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (*grpc.ClientConn, error) {
@@ -91,6 +94,7 @@ func getGrpcClient(ctx context.Context, dest net.Destination, streamSettings *in
 	}
 
 	dialOptions := []grpc.DialOption{
+		grpc.WithDefaultCallOptions(grpc.ForceCodecV2(encoding.TunnelCodec())),
 		grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff: backoff.Config{
 				BaseDelay:  500 * time.Millisecond,

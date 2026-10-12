@@ -3,6 +3,7 @@ package pipe_test
 import (
 	"errors"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,6 +136,99 @@ func TestInterfaces(t *testing.T) {
 	_ = common.Interruptible(new(Reader))
 	_ = common.Interruptible(new(Writer))
 	_ = common.Closable(new(Writer))
+}
+
+func TestPipeReadyTimeoutReadDoesNotAllocateTimer(t *testing.T) {
+	reader, writer := New()
+	packet := buf.New()
+	packet.WriteString("ready")
+	mb := buf.MultiBuffer{packet}
+	defer func() { buf.ReleaseMulti(mb) }()
+	allocs := testing.AllocsPerRun(100, func() {
+		if err := writer.WriteMultiBuffer(mb); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		mb, err = reader.ReadMultiBufferTimeout(time.Second)
+		if err != nil || mb.Len() != 5 || mb[0].Bytes()[0] != 'r' {
+			t.Fatalf("ready read: %v, %v", mb, err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("ready read allocated timer: %g allocations", allocs)
+	}
+}
+
+func TestPipeTimeoutAndWakeup(t *testing.T) {
+	reader, writer := New()
+	if mb, err := reader.ReadMultiBufferTimeout(time.Millisecond); err != buf.ErrReadTimeout || mb != nil {
+		t.Fatalf("timeout = %v, %v", mb, err)
+	}
+	go func() {
+		time.Sleep(time.Millisecond)
+		packet := buf.New()
+		packet.WriteString("wake")
+		writer.WriteMultiBuffer(buf.MultiBuffer{packet})
+	}()
+	mb, err := reader.ReadMultiBufferTimeout(time.Second)
+	defer buf.ReleaseMulti(mb)
+	if err != nil || mb.String() != "wake" {
+		t.Fatalf("wake = %v, %v", mb, err)
+	}
+}
+
+func TestPipeOverflowObserver(t *testing.T) {
+	var dropped atomic.Int32
+	reader, writer := New(WithSizeLimit(0), DiscardOverflow(), OnDiscard(func(packets int) {
+		dropped.Add(int32(packets))
+	}))
+	defer reader.Interrupt()
+	first := buf.New()
+	first.WriteString("kept")
+	common.Must(writer.WriteMultiBuffer(buf.MultiBuffer{first}))
+	second, third := buf.New(), buf.New()
+	second.WriteString("dropped")
+	third.WriteString("also dropped")
+	common.Must(writer.WriteMultiBuffer(buf.MultiBuffer{second, third}))
+	if dropped.Load() != 2 || second.Bytes() != nil || third.Bytes() != nil {
+		t.Fatal("overflow was not counted or released")
+	}
+	mb, err := reader.ReadMultiBuffer()
+	defer buf.ReleaseMulti(mb)
+	if err != nil || mb.String() != "kept" {
+		t.Fatalf("overflow changed queued data: %v, %v", mb, err)
+	}
+}
+
+func TestPipeYieldOverflowStillDiscardsWithoutConsumer(t *testing.T) {
+	var dropped atomic.Int32
+	reader, writer := New(WithSizeLimit(0), DiscardOverflow(), YieldOverflow(), OnDiscard(func(n int) { dropped.Add(int32(n)) }))
+	defer reader.Interrupt()
+	first := buf.New()
+	first.WriteString("kept")
+	common.Must(writer.WriteMultiBuffer(buf.MultiBuffer{first}))
+	complete := make(chan struct{})
+	go func() {
+		defer close(complete)
+		for range 100 {
+			packet := buf.New()
+			packet.WriteString("full")
+			writer.WriteMultiBuffer(buf.MultiBuffer{packet})
+		}
+	}()
+	select {
+	case <-complete:
+	case <-time.After(time.Second):
+		t.Fatal("overflow blocked on the consumer")
+	}
+	if dropped.Load() != 100 {
+		t.Fatalf("dropped = %d, want 100", dropped.Load())
+	}
+	mb, err := reader.ReadMultiBuffer()
+	defer buf.ReleaseMulti(mb)
+	if err != nil || mb.String() != "kept" {
+		t.Fatal("overflow changed queued data")
+	}
 }
 
 func BenchmarkPipeReadWrite(b *testing.B) {

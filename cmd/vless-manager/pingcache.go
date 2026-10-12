@@ -21,23 +21,37 @@ type pingCache struct {
 	mkdir  sync.Once
 }
 
-func newPingCache(path string) *pingCache {
+func newPingCache(path string, legacyPaths ...string) *pingCache {
 	pc := &pingCache{path: path, byID: map[string]PingResult{}}
-	pc.load()
+	if !pc.load(path) {
+		for _, legacy := range legacyPaths {
+			if legacy != path && pc.load(legacy) {
+				break
+			}
+		}
+	}
 	return pc
 }
 
-func (c *pingCache) load() {
-	data, err := os.ReadFile(c.path)
+func (c *pingCache) load(path string) bool {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_ = json.Unmarshal(data, &c.byID)
+	var results map[string]PingResult
+	if json.Unmarshal(data, &results) != nil || results == nil {
+		return false
+	}
+	c.byID = results
+	return true
 }
 
 func (c *pingCache) save() {
+	// Take snapshots in write order, not before acquiring the writer lock.
+	c.saveMu.Lock()
+	defer c.saveMu.Unlock()
 	c.mu.RLock()
 	data, err := json.Marshal(c.byID)
 	c.mu.RUnlock()
@@ -46,9 +60,6 @@ func (c *pingCache) save() {
 	}
 	c.mkdir.Do(func() { _ = os.MkdirAll(filepath.Dir(c.path), 0755) })
 
-	// Serialise tmp+rename so two concurrent writers don't lose data.
-	c.saveMu.Lock()
-	defer c.saveMu.Unlock()
 	tmp := c.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err == nil {
 		_ = os.Rename(tmp, c.path)

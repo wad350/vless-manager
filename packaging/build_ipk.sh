@@ -45,9 +45,9 @@ Version: ${VERSION}
 Architecture: ${ARCH}
 Maintainer: local
 Description: VLESS proxy manager with WebUI for Keenetic routers. Embeds Xray
- as a library and runs a TUN transparent tunnel. Policy routing
+ as a library and runs a native TPROXY transparent tunnel. Policy routing
  sends all external LAN and router TCP/UDP traffic through VLESS while
- LAN/private traffic and manager health probes stay on the WAN route.
+ LAN/private traffic and WAN probes stay direct; tunnel checks use VLESS.
  The MIPS package bundles iptables for offline installation on Keenetic.
 EOF
 
@@ -56,7 +56,7 @@ cat > "$PKG_DIR/CONTROL/postinst" <<'EOF'
 [ -n "$IPKG_INSTROOT" ] && exit 0
 
 # Hard runtime dependency: routing.go calls iptables for the mangle/MARK rules
-# that send LAN traffic through tun0. Keenetic ships without it and Entware
+# that send LAN traffic through TPROXY. Keenetic ships without it and Entware
 # repo is often unreachable from LTE (DPI), so we ship a copy and unpack it
 # in-place via plain tar — no opkg metadata round-trip required.
 VENDOR=/opt/share/vless-manager/iptables_kn.ipk

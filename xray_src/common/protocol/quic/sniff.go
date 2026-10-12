@@ -70,6 +70,16 @@ func SniffQUIC(b []byte) (*SniffHeader, error) {
 	if len(b) == 0 {
 		return nil, common.ErrNoClue
 	}
+	// Reject ordinary UDP before acquiring QUIC handshake scratch buffers.
+	if b[0]&0xc0 != 0xc0 {
+		return nil, errNotQUICInitial
+	}
+	if len(b) < 5 {
+		return nil, errNotQUIC
+	}
+	if _, ok := quicVersionSpecMap[binary.BigEndian.Uint32(b[1:5])]; !ok {
+		return nil, errNotQUIC
+	}
 
 	// Crypto data separated across packets
 	cryptoLen := int32(0)

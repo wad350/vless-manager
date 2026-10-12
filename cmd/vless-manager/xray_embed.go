@@ -17,17 +17,22 @@ import (
 	_ "github.com/xtls/xray-core/app/router"
 	_ "github.com/xtls/xray-core/app/stats"
 	xlog "github.com/xtls/xray-core/common/log"
+	xnet "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/serial"
+	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/infra/conf"
+	_ "github.com/xtls/xray-core/proxy/dokodemo"
 	_ "github.com/xtls/xray-core/proxy/freedom"
 	_ "github.com/xtls/xray-core/proxy/socks"
-	_ "github.com/xtls/xray-core/proxy/tun"
 	_ "github.com/xtls/xray-core/proxy/vless/outbound"
 	_ "github.com/xtls/xray-core/transport/internet/grpc"
 	_ "github.com/xtls/xray-core/transport/internet/httpupgrade"
 	_ "github.com/xtls/xray-core/transport/internet/reality"
 	_ "github.com/xtls/xray-core/transport/internet/splithttp"
+	_ "github.com/xtls/xray-core/transport/internet/tagged/taggedimpl"
 	_ "github.com/xtls/xray-core/transport/internet/tcp"
 	_ "github.com/xtls/xray-core/transport/internet/tls"
 	_ "github.com/xtls/xray-core/transport/internet/websocket"
@@ -74,10 +79,57 @@ func (b *xrayLogBridge) Handle(message xlog.Message) {
 
 type embeddedXray struct {
 	*core.Instance
-	stats     stats.Manager
-	proxyTags []string
-	logTarget *xrayLogTarget
-	cancel    context.CancelFunc
+	stats         stats.Manager
+	proxyTags     []string
+	logTarget     *xrayLogTarget
+	cancel        context.CancelFunc
+	ctx           context.Context
+	routingConfig *conf.RouterConfig
+	proxyRule     map[string]any
+}
+
+const xrayTunnelTestTag = "manager-tunnel-test"
+
+type xrayClientConn struct {
+	net.Conn
+	cancel context.CancelFunc
+}
+
+func (c *xrayClientConn) Close() error {
+	c.cancel()
+	return c.Conn.Close()
+}
+
+func (b *embeddedXray) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if network != "tcp" && network != "tcp4" && network != "tcp6" {
+		return nil, fmt.Errorf("tunnel HTTP dial requires TCP, got %s", network)
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	p, err := xnet.PortFromString(port)
+	if err != nil {
+		return nil, err
+	}
+	// HTTP connection reuse outlives the transport's dial context. Each pipe
+	// belongs to this core and is cancelled on connection close or core stop.
+	streamCtx, cancel := context.WithCancel(b.ctx)
+	streamCtx = session.ContextWithInbound(streamCtx, &session.Inbound{Tag: xrayTunnelTestTag})
+	conn, err := core.Dial(streamCtx, b.Instance, xnet.TCPDestination(xnet.ParseAddress(host), p))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		cancel()
+		conn.Close()
+		return nil, err
+	}
+	return &xrayClientConn{Conn: conn, cancel: cancel}, nil
 }
 
 func (b *embeddedXray) Close() error {
@@ -89,6 +141,31 @@ func (b *embeddedXray) Close() error {
 		engineLogs.target.CompareAndSwap(b.logTarget, nil)
 	}
 	return err
+}
+
+func (b *embeddedXray) UpdateBypassRules(cfg *Config) error {
+	if b.routingConfig == nil || b.proxyRule == nil {
+		return fmt.Errorf("Xray routing configuration unavailable")
+	}
+	rules := xrayRoutingRules(cfg, b.proxyRule)
+	updated := *b.routingConfig
+	updated.RuleList = make([]json.RawMessage, 0, len(rules))
+	for _, rule := range rules {
+		data, err := json.Marshal(rule)
+		if err != nil {
+			return err
+		}
+		updated.RuleList = append(updated.RuleList, data)
+	}
+	built, err := updated.Build()
+	if err != nil {
+		return err
+	}
+	router, ok := b.GetFeature(routing.RouterType()).(routing.Router)
+	if !ok {
+		return fmt.Errorf("Xray router unavailable")
+	}
+	return router.AddRule(serial.ToTypedMessage(built), false)
 }
 
 func (b *embeddedXray) TrafficSnapshot() outboundTrafficSnapshot {
@@ -164,7 +241,14 @@ func startXray(data []byte, logs *ringBuffer, mainTunnel bool) (engineHandle, er
 		}
 		return nil, fmt.Errorf("create Xray: %w", err)
 	}
-	b := &embeddedXray{Instance: instance, logTarget: target, cancel: cancel}
+	b := &embeddedXray{Instance: instance, logTarget: target, cancel: cancel, ctx: ctx}
+	b.routingConfig = cfg.RouterConfig
+	if cfg.RouterConfig != nil && len(cfg.RouterConfig.RuleList) > 0 {
+		if err := json.Unmarshal(cfg.RouterConfig.RuleList[len(cfg.RouterConfig.RuleList)-1], &b.proxyRule); err != nil {
+			_ = b.Close()
+			return nil, fmt.Errorf("read Xray proxy rule: %w", err)
+		}
+	}
 	b.stats, _ = instance.GetFeature(stats.ManagerType()).(stats.Manager)
 	for _, out := range cfg.OutboundConfigs {
 		if out.Tag == "proxy" || strings.HasPrefix(out.Tag, "proxy-") {

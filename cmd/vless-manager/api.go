@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -44,19 +45,22 @@ type priorityServerGroup struct {
 type apiServer struct {
 	mu sync.RWMutex
 
-	pm         *ProcessManager
-	cfg        *Config
-	subs       []*Subscription
-	cfgPath    string
-	subPath    string
-	mux        *http.ServeMux
-	health     *healthMonitor
-	pingCache  *pingCache
-	failover   *failoverController
-	updater    *appUpdater
-	auth       *authService
-	operations *operationCoordinator
-	speedTest  *speedTestService
+	pm                 *ProcessManager
+	cfg                *Config
+	subs               []*Subscription
+	cfgPath            string
+	subPath            string
+	runtimeDir         string
+	mux                *http.ServeMux
+	health             *healthMonitor
+	pingCache          *pingCache
+	failover           *failoverController
+	updater            *appUpdater
+	auth               *authService
+	operations         *operationCoordinator
+	speedTest          *speedTestService
+	diagnosticsEnabled bool
+	profileBusy        atomic.Bool
 
 	pingMu       sync.Mutex
 	pingProgress PingProgress
@@ -66,6 +70,7 @@ type apiServer struct {
 	pingCancel   context.CancelFunc
 	lastPing     []PingResult
 	bypassDiag   bypassDiagnostics
+	bypassFetch  func(context.Context, string) ([]string, string, error)
 	// pingRunner is overridden only by unit tests for priority selection.
 	// Production calls runPingAll.
 	pingRunner func([]VLESSServer) []PingResult
@@ -79,21 +84,35 @@ type apiServer struct {
 }
 
 func newAPIServer(pm *ProcessManager, cfg *Config, subs []*Subscription, cfgPath, subPath string) *apiServer {
+	return newAPIServerWithRuntimeDir(pm, cfg, subs, cfgPath, subPath, filepath.Dir(cfgPath))
+}
+
+func newAPIServerWithRuntimeDir(pm *ProcessManager, cfg *Config, subs []*Subscription, cfgPath, subPath, runtimeDir string) *apiServer {
 	s := &apiServer{
 		pm: pm, cfg: cfg, subs: subs, cfgPath: cfgPath, subPath: subPath,
-		mux:       http.NewServeMux(),
-		health:    newHealthMonitor(),
-		pingCache: newPingCache(filepath.Join(filepath.Dir(cfgPath), "ping-cache.json")),
-		auth:      newAuthService(newKeeneticAuthenticator("")),
+		runtimeDir: runtimeDir,
+		mux:        http.NewServeMux(),
+		health:     newHealthMonitor(),
+		pingCache:  newPingCache(filepath.Join(runtimeDir, "ping-cache.json"), filepath.Join(filepath.Dir(cfgPath), "ping-cache.json")),
+		auth:       newAuthService(newKeeneticAuthenticator("")),
 	}
 	s.failover = newFailoverController(s, cfg.AutoFailover, cfg.AutoTunnelFailover)
 	s.operations = newOperationCoordinator(pm)
 	s.speedTest = newSpeedTestService(s)
 	s.updater = newAppUpdater(s)
 	s.connectStartFn = s.startManagedVPN
+	s.bypassFetch = s.fetchBypassSource
 	s.health.SetSettingsSource(s.settingsSnapshot)
 	s.routes()
 	return s
+}
+
+func (s *apiServer) runtimePath(name string) string {
+	dir := s.runtimeDir
+	if dir == "" {
+		dir = filepath.Dir(s.cfgPath)
+	}
+	return filepath.Join(dir, name)
 }
 
 // settingsSnapshot returns a defensive copy of the currently-loaded
@@ -187,6 +206,9 @@ func (s *apiServer) runPingAllNamedCore(ctx context.Context, servers []VLESSServ
 		return nil
 	}
 	pingSettings := s.settingsSnapshot()
+	for i := range servers {
+		servers[i] = serverWithTLSProfile(servers[i], pingSettings.TLSClientProfile)
+	}
 
 	s.pingMu.Lock()
 	if s.pingGen != observedGen {
@@ -209,19 +231,8 @@ func (s *apiServer) runPingAllNamedCore(ctx context.Context, servers []VLESSServ
 	s.pingMu.Unlock()
 	report(operationProgress{Total: pingWorkUnitCount(servers), Message: "Подготавливаем проверку серверов"})
 
-	// WAN bypass rules so temp Xray connections hit the VLESS servers
-	// directly, not through the currently-active tunnel.
-	seen := map[string]bool{}
-	for _, srv := range physicalPingServers(servers) {
-		for _, ip := range ResolveAddrs(srv.Address) {
-			if !seen[ip] {
-				seen[ip] = true
-				AddPingBypass(ip)
-			}
-		}
-	}
-	defer ClearPingBypasses()
-
+	// Temporary Xray outbounds carry the WAN mark; no per-node route or
+	// redundant, uncancellable DNS preflight is needed for TPROXY.
 	opID := s.pm.nextOperationID("ping")
 	started := time.Now()
 	effectiveParallel := pingSettings.PingMaxParallel
@@ -506,6 +517,17 @@ func (s *apiServer) startManagedVPN(cfg *Config) error {
 	if err := s.pm.Start(cfg); err != nil {
 		return err
 	}
+	// The start snapshot may predate a concurrent WAN change or list refresh.
+	s.mu.RLock()
+	var err error
+	if !slices.Equal(bypassDomainsFor(cfg), bypassDomainsFor(s.cfg)) ||
+		cfg.Settings.BypassRouteRussia != s.cfg.Settings.BypassRouteRussia {
+		err = s.pm.UpdateBypassRules(s.cfg)
+	}
+	s.mu.RUnlock()
+	if err != nil {
+		return fmt.Errorf("sync bypass rules after start: %w", err)
+	}
 	if s.failover != nil {
 		s.failover.CheckTunnelNow()
 	}
@@ -551,6 +573,10 @@ func (s *apiServer) chooseAlternativeServer() string {
 }
 
 func (s *apiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if err := apiOriginProtection.Check(r); err != nil {
+		writeError(w, http.StatusForbidden, "cross-origin request rejected")
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") && r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
 	}
@@ -619,6 +645,10 @@ func (s *apiServer) routes() {
 	s.mux.HandleFunc("/api/settings/defaults", s.handleSettingsDefaults)
 	// Runtime-refreshable copy of the embedded RU bypass whitelist.
 	s.mux.HandleFunc("/api/bypass", s.handleBypass)
+	s.mux.HandleFunc("/api/diagnostics/runtime", s.handleRuntimeDiagnostics)
+	s.mux.HandleFunc("/api/diagnostics/cpu", s.handleCPUProfile)
+	s.mux.HandleFunc("/api/diagnostics/heap", s.handleHeapProfile)
+	s.mux.HandleFunc("/api/diagnostics/goroutines", s.handleGoroutineProfile)
 }
 
 func (s *apiServer) handleOperations(w http.ResponseWriter, r *http.Request) {
@@ -666,7 +696,7 @@ func (s *apiServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	settings := s.settingsSnapshot()
-	if !settings.AuthEnabled {
+	if !settings.AuthEnabled && !s.diagnosticsEnabled {
 		writeJSON(w, map[string]any{"authenticated": true, "enabled": false})
 		return
 	}
@@ -727,7 +757,7 @@ func (s *apiServer) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode, MaxAge: int(ttl.Seconds()),
 	})
 	s.pm.event(serviceLogInfo, "auth", "auth.login_succeeded", "вход в VLESS Manager", field("client_ip", client), field("login", request.Login))
-	writeJSON(w, map[string]any{"authenticated": true, "enabled": true, "login": session.Login, "expires_at": session.ExpiresAt})
+	writeJSON(w, map[string]any{"authenticated": true, "enabled": settings.AuthEnabled, "login": session.Login, "expires_at": session.ExpiresAt})
 }
 
 func (s *apiServer) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
@@ -796,6 +826,16 @@ func (s *apiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid settings: "+err.Error())
 			return
 		}
+		profileChanged := previous.TLSClientProfile != out.TLSClientProfile
+		if profileChanged {
+			// Do not publish results measured with a different TLS profile.
+			if !s.pingRunMu.TryLock() {
+				s.mu.Unlock()
+				writeError(w, http.StatusConflict, "wait for the server check before changing the TLS profile")
+				return
+			}
+			defer s.pingRunMu.Unlock()
+		}
 		s.cfg.Settings = out
 		if err := saveConfig(s.cfgPath, s.cfg); err != nil {
 			s.cfg.Settings = previous
@@ -806,6 +846,12 @@ func (s *apiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		snap := s.cfg.Settings
 		cfgSnap := cloneConfig(s.cfg)
 		s.mu.Unlock()
+		if profileChanged {
+			s.pingMu.Lock()
+			s.lastPing = nil
+			s.pingGen++
+			s.pingMu.Unlock()
+		}
 		logLevelChanged := previous.ServiceLogLevel != out.ServiceLogLevel || previous.LogLevel != out.LogLevel
 		s.pm.SetServiceLogLevel(out.ServiceLogLevel)
 		if logLevelChanged {
@@ -815,14 +861,14 @@ func (s *apiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 		restartRequired := previous.BypassRouteRussia != out.BypassRouteRussia ||
 			!slices.Equal(previous.BypassDomains, out.BypassDomains) ||
-			previous.LogLevel != out.LogLevel
+			previous.LogLevel != out.LogLevel || profileChanged
 		s.pm.event(serviceLogInfo, "manager", "settings.updated",
 			"настройки сохранены",
 			field("service_log_level", out.ServiceLogLevel),
 			field("xray_log_level", out.LogLevel),
 			field("ping_selection_mode", out.PingSelectionMode),
 			field("restart_required", restartRequired))
-		if restartRequired && s.pm.TunRunning() {
+		if restartRequired && s.pm.TunnelRunning() {
 			started := time.Now()
 			s.pm.event(serviceLogInfo, "manager", "settings.apply_start",
 				"перезапуск VPN для применения настроек",
@@ -873,6 +919,7 @@ type bypassStatus struct {
 	LastTransport   string     `json:"last_transport,omitempty"`
 	LastDurationMS  int64      `json:"last_duration_ms,omitempty"`
 	LastError       string     `json:"last_error,omitempty"`
+	Domains         []string   `json:"domains"`
 }
 
 type bypassDiagnostics struct {
@@ -887,7 +934,7 @@ type bypassDiagnostics struct {
 func (s *apiServer) bypassStatusLocked() bypassStatus {
 	embeddedCount := len(parseDomainList(bypassRussiaWhitelist))
 	cacheCount := len(s.cfg.BypassCache.Domains)
-	effectiveCount := len(bypassDomainsFor(s.cfg))
+	effectiveCount := bypassEffectiveCount(s.cfg)
 	source := "встроенный в пакет"
 	sourceType := "embedded"
 	updatedAt := time.Time{}
@@ -903,7 +950,7 @@ func (s *apiServer) bypassStatusLocked() bypassStatus {
 		CustomCount:     len(s.cfg.Settings.BypassDomains),
 		EffectiveCount:  effectiveCount,
 		Enabled:         s.cfg.Settings.BypassRouteRussia,
-		Applied:         s.pm.TunRunning(),
+		Applied:         s.pm.TunnelRunning(),
 		Source:          source,
 		SourceType:      sourceType,
 		Cached:          cacheCount > 0,
@@ -911,6 +958,7 @@ func (s *apiServer) bypassStatusLocked() bypassStatus {
 		LastTransport:   s.bypassDiag.Transport,
 		LastDurationMS:  s.bypassDiag.DurationMS,
 		LastError:       s.bypassDiag.Error,
+		Domains:         bypassListDomainsFor(s.cfg),
 	}
 	if !updatedAt.IsZero() {
 		status.UpdatedAt = &updatedAt
@@ -937,196 +985,11 @@ func (s *apiServer) handleBypass(w http.ResponseWriter, r *http.Request) {
 		s.mu.RUnlock()
 		writeJSON(w, status)
 	case http.MethodPost:
-		lease, leaseErr := s.operations.Acquire(r.Context(), operationRequest{
-			Kind:        "bypass",
-			Title:       "Обновление bypass",
-			Source:      "manual",
-			Cancellable: true,
-			StallLimit:  60 * time.Second,
-		})
-		if leaseErr != nil {
-			writeError(w, http.StatusConflict, leaseErr.Error())
-			return
-		}
-		var operationErr error
-		defer func() { lease.Finish(operationErr) }()
-		lease.Progress(operationProgress{Total: 3, Message: "Загружаем список доменов"})
-		st := s.settingsSnapshot()
-		opID := s.pm.nextOperationID("bypass")
-		started := time.Now()
-		timeout := st.SubscriptionFetchTimeout()
-		s.mu.Lock()
-		s.bypassDiag = bypassDiagnostics{
-			OperationID: opID,
-			AttemptAt:   started,
-			Transport:   "wan",
-		}
-		currentCacheCount := len(s.cfg.BypassCache.Domains)
-		s.mu.Unlock()
-		s.pm.event(serviceLogInfo, "bypass", "refresh.start",
-			"обновление RU-списка начато",
-			field("op_id", opID),
-			field("source", bypassWhitelistURL),
-			field("timeout_ms", timeout.Milliseconds()),
-			field("current_cache_domains", currentCacheCount))
-
-		attemptStarted := time.Now()
-		domains, err := fetchBypassWhitelistContext(lease.Context(), directBypassHTTPClient(st.SubscriptionFetchTimeout()))
-		transport := "wan"
-		if err == nil {
-			s.pm.event(serviceLogDebug, "bypass", "fetch.succeeded",
-				"список загружен напрямую",
-				field("op_id", opID),
-				field("transport", transport),
-				field("domains", len(domains)),
-				field("duration_ms", time.Since(attemptStarted).Milliseconds()))
-		}
-
-		// If the normal router path cannot reach GitHub, use the configured
-		// active VLESS node explicitly even when the main tunnel is stopped.
+		status, err := s.refreshBypassLists(r.Context(), "manual")
 		if err != nil {
-			s.pm.event(serviceLogWarn, "bypass", "fetch.failed",
-				"прямая загрузка не удалась, проверяю возможность загрузки через VLESS",
-				field("op_id", opID),
-				field("transport", "wan"),
-				field("duration_ms", time.Since(attemptStarted).Milliseconds()),
-				field("error", err))
-			s.mu.RLock()
-			active := s.cfg.activeServer()
-			var activeCopy *VLESSServer
-			if active != nil {
-				copy := *active
-				activeCopy = &copy
-			}
-			s.mu.RUnlock()
-			if activeCopy != nil {
-				transport = "vless"
-				attemptStarted = time.Now()
-				s.pm.event(serviceLogInfo, "bypass", "fetch.retry",
-					"повторная загрузка через активный VLESS-сервер",
-					field("op_id", opID),
-					field("transport", transport),
-					field("server", activeCopy.Name),
-					field("address", activeCopy.Address))
-				client, box, proxyErr := httpClientViaVLESS(activeCopy, st.SubscriptionFetchTimeout(), st.PingStartupSleep(), s.pm.logs)
-				if proxyErr == nil {
-					domains, err = fetchBypassWhitelistContext(lease.Context(), client)
-					_ = box.Close()
-					if err == nil {
-						s.pm.event(serviceLogDebug, "bypass", "fetch.succeeded",
-							"список загружен через VLESS",
-							field("op_id", opID),
-							field("transport", transport),
-							field("server", activeCopy.Name),
-							field("domains", len(domains)),
-							field("duration_ms", time.Since(attemptStarted).Milliseconds()))
-					}
-				} else {
-					s.pm.event(serviceLogWarn, "bypass", "proxy.start_failed",
-						"не удалось подготовить временный VLESS-клиент",
-						field("op_id", opID),
-						field("server", activeCopy.Name),
-						field("error", proxyErr))
-				}
-			} else {
-				s.pm.event(serviceLogWarn, "bypass", "fetch.no_fallback",
-					"активный VLESS-сервер не настроен, повторная загрузка невозможна",
-					field("op_id", opID))
-			}
-		}
-		lease.Progress(operationProgress{Done: 1, Total: 3, Message: "Список загружен, сохраняем изменения"})
-		if cancelErr := lease.Context().Err(); cancelErr != nil {
-			operationErr = cancelErr
-			writeError(w, http.StatusRequestTimeout, errOperationCancelled.Error())
-			return
-		}
-		if err != nil {
-			operationErr = err
-			duration := time.Since(started).Milliseconds()
-			s.mu.Lock()
-			s.bypassDiag.Transport = transport
-			s.bypassDiag.DurationMS = duration
-			s.bypassDiag.Error = err.Error()
-			s.mu.Unlock()
-			s.pm.event(serviceLogError, "bypass", "refresh.failed",
-				"RU-список не обновлён, продолжает использоваться предыдущая версия",
-				field("op_id", opID),
-				field("transport", transport),
-				field("duration_ms", duration),
-				field("error", err))
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
-
-		now := time.Now()
-		s.mu.Lock()
-		s.cfg.BypassCache = BypassCache{
-			Domains: domains, UpdatedAt: now, Source: bypassWhitelistURL,
-		}
-		if err := saveConfig(s.cfgPath, s.cfg); err != nil {
-			operationErr = err
-			s.bypassDiag.Transport = transport
-			s.bypassDiag.DurationMS = time.Since(started).Milliseconds()
-			s.bypassDiag.Error = err.Error()
-			s.mu.Unlock()
-			s.pm.event(serviceLogError, "bypass", "persist.failed",
-				"список загружен, но не сохранён",
-				field("op_id", opID),
-				field("domains", len(domains)),
-				field("error", err))
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		cfgSnap := cloneConfig(s.cfg)
-		s.mu.Unlock()
-		lease.Progress(operationProgress{Done: 2, Total: 3, Message: "Применяем список маршрутизации"})
-
-		if s.pm.TunRunning() {
-			restartStarted := time.Now()
-			s.pm.event(serviceLogInfo, "bypass", "apply.start",
-				"перезапуск VPN для применения нового списка",
-				field("op_id", opID),
-				field("domains", len(domains)))
-			_ = s.pm.Stop()
-			if err := s.startManagedVPN(cfgSnap); err != nil {
-				operationErr = err
-				s.mu.Lock()
-				s.bypassDiag.Transport = transport
-				s.bypassDiag.DurationMS = time.Since(started).Milliseconds()
-				s.bypassDiag.Error = "VPN restart failed: " + err.Error()
-				s.mu.Unlock()
-				s.pm.event(serviceLogError, "bypass", "apply.failed",
-					"список сохранён, но VPN не запустился",
-					field("op_id", opID),
-					field("error", err),
-					field("duration_ms", time.Since(restartStarted).Milliseconds()))
-				writeError(w, http.StatusInternalServerError, "list saved, but VPN restart failed: "+err.Error())
-				return
-			}
-			s.pm.event(serviceLogInfo, "bypass", "apply.succeeded",
-				"новый список применён к работающему VPN",
-				field("op_id", opID),
-				field("duration_ms", time.Since(restartStarted).Milliseconds()))
-		}
-
-		duration := time.Since(started).Milliseconds()
-		s.mu.Lock()
-		s.bypassDiag.Transport = transport
-		s.bypassDiag.DurationMS = duration
-		s.bypassDiag.SuccessAt = time.Now()
-		s.bypassDiag.Error = ""
-		status := s.bypassStatusLocked()
-		status.Restarted = cfgSnap.ActiveServer != "" && s.pm.TunRunning()
-		s.mu.Unlock()
-		s.pm.event(serviceLogInfo, "bypass", "refresh.succeeded",
-			"RU-список обновлён и готов к использованию",
-			field("op_id", opID),
-			field("transport", transport),
-			field("domains", len(domains)),
-			field("effective_domains", status.EffectiveCount),
-			field("duration_ms", duration),
-			field("vpn_running", status.Applied))
-		lease.Progress(operationProgress{Done: 3, Total: 3, Message: "Bypass обновлён"})
 		writeJSON(w, status)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "GET or POST only")
@@ -1339,7 +1202,7 @@ func (s *apiServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	subInfo := s.activeSubUserInfoLocked()
-	bypassCount := len(bypassDomainsFor(s.cfg))
+	bypassCount := bypassEffectiveCount(s.cfg)
 	s.mu.RUnlock()
 
 	s.pingMu.Lock()
@@ -1374,8 +1237,9 @@ func (s *apiServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"active_server_details":    serverDetails,
 		"active_server_latency_ms": activeLatency,
 		"bypass_effective_count":   bypassCount,
-		"tun_running":              s.pm.TunRunning(),
+		"tun_running":              s.pm.TunnelRunning(), // Legacy API field, not a tun0 probe.
 		"route_ready":              status.RouteReady,
+		"routing_mode":             status.RoutingMode,
 		"internet":                 s.health.Status(),
 		"sub_user_info":            subInfo,
 		"failover":                 failoverState,
@@ -1411,6 +1275,10 @@ func (s *apiServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		defer s.mu.Unlock()
 		if newCfg.Port == 0 {
 			newCfg.Port = s.cfg.Port
+		}
+		if newCfg.Port < 1 || newCfg.Port > 65535 {
+			writeError(w, http.StatusBadRequest, "port must be between 1 and 65535")
+			return
 		}
 		if newCfg.Servers == nil {
 			newCfg.Servers = s.cfg.Servers
@@ -1553,8 +1421,14 @@ func (s *apiServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		sinceStr := r.URL.Query().Get("since")
 		since, _ := strconv.Atoi(sinceStr)
-		lines, seq := s.pm.logs.Lines(since)
-		entries, _ := s.pm.logs.Entries(since)
+		entries, seq := s.pm.logs.Entries(since)
+		var lines []string
+		if r.URL.Query().Get("format") != "structured" && len(entries) > 0 {
+			lines = make([]string, len(entries))
+			for i, entry := range entries {
+				lines[i] = formatServiceLogEntry(entry)
+			}
+		}
 		writeJSON(w, map[string]any{"lines": lines, "entries": entries, "seq": seq})
 	case http.MethodDelete:
 		s.pm.ClearLogs()

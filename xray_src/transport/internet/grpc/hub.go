@@ -81,7 +81,7 @@ func Listen(ctx context.Context, address net.Address, port net.Port, settings *i
 
 	config := tls.ConfigFromStreamSettings(settings)
 
-	var options []grpc.ServerOption
+	options := []grpc.ServerOption{grpc.ForceServerCodecV2(encoding.TunnelCodec())}
 	var s *grpc.Server
 	if config != nil {
 		// gRPC server may silently ignore TLS errors

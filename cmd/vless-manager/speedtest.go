@@ -143,7 +143,7 @@ func (s *apiServer) handleSpeedTest(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, s.speedTest.snapshot())
 	case http.MethodPost:
-		if !s.pm.TunRunning() {
+		if !s.pm.TunnelRunning() {
 			writeError(w, http.StatusConflict, "сначала включите VPN")
 			return
 		}
@@ -219,7 +219,12 @@ func (s *speedTestService) execute(provider string) {
 			status.State = "running"
 			status.Message = "Выбираем сервер"
 		})
-		config, prepareErr := prepareSpeedTestConfig(ctx, provider)
+		client, clientErr := s.api.pm.tunnelSpeedTestClient(speedTestWorkers)
+		if clientErr != nil {
+			return clientErr
+		}
+		defer client.CloseIdleConnections()
+		config, prepareErr := prepareSpeedTestConfigWithClient(ctx, provider, client)
 		if prepareErr != nil {
 			return prepareErr
 		}
@@ -313,6 +318,21 @@ func newSpeedTestHTTPClient(workers int) *http.Client {
 	return &http.Client{Transport: transport}
 }
 
+func (pm *ProcessManager) tunnelSpeedTestClient(workers int) (*http.Client, error) {
+	pm.mu.Lock()
+	engine, ok := pm.box.(*embeddedXray)
+	running := pm.running
+	pm.mu.Unlock()
+	if !running || !ok {
+		return nil, errors.New("VPN выключен")
+	}
+	client := newSpeedTestHTTPClient(workers)
+	transport := client.Transport.(*http.Transport)
+	transport.Proxy = nil
+	transport.DialContext = engine.DialContext
+	return client, nil
+}
+
 func cloudflareSpeedTestConfig(client *http.Client) speedTestConfig {
 	return speedTestConfig{
 		Server:        "Cloudflare",
@@ -355,6 +375,10 @@ type speedTestRUServer struct {
 
 func prepareSpeedTestConfig(ctx context.Context, provider string) (speedTestConfig, error) {
 	client := newSpeedTestHTTPClient(speedTestWorkers)
+	return prepareSpeedTestConfigWithClient(ctx, provider, client)
+}
+
+func prepareSpeedTestConfigWithClient(ctx context.Context, provider string, client *http.Client) (speedTestConfig, error) {
 	if provider == speedTestProviderSpeedtestRU {
 		return prepareSpeedTestRUConfig(ctx, speedTestRUAPIBase, client)
 	}

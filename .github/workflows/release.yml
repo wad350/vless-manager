@@ -35,11 +35,7 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Test
-        run: |
-          go test ./...
-          (cd xray_src && go test ./common/buf ./transport/internet/grpc/... ./transport/internet)
-          sh -n install.sh
-          sh tests/install_test.sh
+        run: sh tests/check.sh
 
       - name: Build release assets
         shell: bash

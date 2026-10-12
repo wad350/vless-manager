@@ -12,6 +12,7 @@ import (
 	"github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
+	protocoludp "github.com/xtls/xray-core/common/protocol/udp"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/policy"
@@ -238,6 +239,7 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 					w.mark,
 				)
 				if err != nil {
+					protocoludp.RecordReply(err)
 					errors.LogInfo(context.Background(), err.Error())
 					b.Release()
 					continue
@@ -245,6 +247,7 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 				w.conns[*b.UDP] = conn
 			}
 			_, err = conn.WriteTo(b.Bytes(), w.back)
+			protocoludp.RecordReply(err)
 			if err != nil {
 				errors.LogInfo(context.Background(), err.Error())
 				w.conns[*b.UDP] = nil
@@ -253,6 +256,7 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			b.Release()
 		} else {
 			_, err = w.conn.WriteTo(b.Bytes(), w.back)
+			protocoludp.RecordReply(err)
 			b.Release()
 			if err != nil {
 				buf.ReleaseMulti(mb)
