@@ -33,7 +33,7 @@ Keep upstream licenses when updating. This embedded runtime includes local chang
 - Removed unreachable legacy reverse/VMess bodies, private unused state/helpers,
   redundant allocations and one-line package placeholders. Public APIs, registrations,
   generated schemas, optional protocols and active congestion algorithms remain.
-- Test fixes synchronize workers and ownership, use temporary certificate files,
+- Test fixes synchronize workers and ownership, use temporary certificate/GeoData files,
   and follow optional protocol tags. External ECH tests skip under `-short`.
 
 TCP batching, optional TUN TCP buffer sizes, UDP scheduler yielding and the TUN

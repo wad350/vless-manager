@@ -1,6 +1,7 @@
 package conf_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -8,8 +9,20 @@ import (
 	. "github.com/xtls/xray-core/infra/conf"
 )
 
+func useTestGeodataAssets(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	// These config tests validate regular-file existence, not GeoData contents.
+	for _, file := range []string{"geoip.dat", "geosite.dat"} {
+		if err := os.WriteFile(filepath.Join(dir, file), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("xray.location.asset", dir)
+}
+
 func TestGeodataConfig(t *testing.T) {
-	t.Setenv("xray.location.asset", filepath.Join("..", "..", "resources"))
+	useTestGeodataAssets(t)
 
 	creator := func() Buildable {
 		return new(GeodataConfig)
@@ -39,7 +52,7 @@ func TestGeodataConfig(t *testing.T) {
 }
 
 func TestGeodataAssetConfig(t *testing.T) {
-	t.Setenv("xray.location.asset", filepath.Join("..", "..", "resources"))
+	useTestGeodataAssets(t)
 
 	if _, err := (&GeodataAssetConfig{
 		URL:  "https://example.com/geoip.dat",
@@ -57,7 +70,7 @@ func TestGeodataAssetConfig(t *testing.T) {
 }
 
 func TestGeodataAssetConfigInvalidURL(t *testing.T) {
-	t.Setenv("xray.location.asset", filepath.Join("..", "..", "resources"))
+	useTestGeodataAssets(t)
 
 	for _, rawURL := range []string{
 		"",
