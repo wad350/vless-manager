@@ -15,12 +15,15 @@ esac
 go test -race -short -count=1 -timeout=120s ./cmd/vless-manager ./packaging/mipscrypto
 (
     cd xray_src
+    go test -count=1 -run '^TestReadAllToBytesReleasesBuffersOnError$' ./common/buf
+    go test -race -count=1 -run 'TestCreateObjectInstanceContext|TestFromContextPanic' ./core
     go test -race -short -count=1 -timeout=120s \
-        ./common/buf ./common/protocol/quic ./common/protocol/udp ./common/task \
+        ./common/buf ./common/crypto/... ./common/protocol/quic ./common/protocol/udp ./common/task \
         ./transport/pipe ./transport/internet ./transport/internet/grpc/... \
         ./transport/internet/tls ./transport/internet/udp \
-        ./app/observatory ./app/proxyman/inbound ./app/proxyman/outbound \
-        ./proxy/blackhole ./proxy/dokodemo ./proxy/vless/outbound
+        ./app/observatory ./app/observatory/burst ./app/stats/command ./app/proxyman/inbound ./app/proxyman/outbound \
+        ./proxy/blackhole ./proxy/dokodemo ./proxy/socks ./proxy/vless/encoding ./proxy/vless/outbound \
+        ./proxy/vmess/encoding ./infra/conf ./transport/internet/finalmask
 )
 node --check cmd/vless-manager/web/app.js
 sh -n install.sh

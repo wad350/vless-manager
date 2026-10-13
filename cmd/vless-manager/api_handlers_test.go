@@ -13,6 +13,14 @@ import (
 	"time"
 )
 
+func newAPIServer(pm *ProcessManager, cfg *Config, subs []*Subscription, cfgPath, subPath string) *apiServer {
+	return newAPIServerWithRuntimeDir(pm, cfg, subs, cfgPath, subPath, filepath.Dir(cfgPath))
+}
+
+func (s *apiServer) findBestPrioritized(excludeID string, rotateFromExcluded bool) (*VLESSServer, *PingResult) {
+	return s.findBestPrioritizedWithCache(excludeID, rotateFromExcluded, false, 0)
+}
+
 func newHandlerTestAPI(t *testing.T) *apiServer {
 	t.Helper()
 	dir := t.TempDir()
@@ -433,6 +441,62 @@ func TestSafeProcessAndFailoverHandlers(t *testing.T) {
 	}
 	if api.cfg.AutoTunnelFailover {
 		t.Fatal("tunnel monitoring was not disabled")
+	}
+}
+
+func TestFreshSelectionDoesNotWaitForPingCacheWriter(t *testing.T) {
+	for _, mode := range []string{"priority", "fastest"} {
+		t.Run(mode, func(t *testing.T) {
+			api := &apiServer{
+				pm:        NewProcessManager(""),
+				cfg:       &Config{Settings: defaultSettings()},
+				pingCache: &pingCache{byID: make(map[string]PingResult)},
+				subs:      []*Subscription{{ID: "test", Servers: []VLESSServer{{ID: "fresh"}}}},
+			}
+			api.cfg.Settings.PingSelectionMode = mode
+			pingCalls := 0
+			api.pingRunner = func([]VLESSServer) []PingResult {
+				pingCalls++
+				return []PingResult{{ServerID: "fresh", LatencyMS: 10}}
+			}
+
+			api.pingCache.mu.Lock()
+			locked := true
+			unlock := func() {
+				if locked {
+					api.pingCache.mu.Unlock()
+					locked = false
+				}
+			}
+			defer unlock()
+			type selection struct {
+				server *VLESSServer
+				result *PingResult
+			}
+			selected := make(chan selection, 1)
+			go func() {
+				server, result := api.findBestConfigured("", false, false)
+				selected <- selection{server: server, result: result}
+			}()
+
+			var got selection
+			select {
+			case got = <-selected:
+				unlock()
+			case <-time.After(2 * time.Second):
+				unlock()
+				select {
+				case <-selected:
+				case <-time.After(2 * time.Second):
+					t.Fatal("selection did not finish after the cache writer released its lock")
+				}
+				t.Fatal("fresh selection waited for the unused ping cache")
+			}
+			if got.server == nil || got.result == nil || got.server.ID != "fresh" ||
+				got.result.ServerID != "fresh" || pingCalls != 1 {
+				t.Fatalf("fresh selection = %#v / %#v; probe calls = %d", got.server, got.result, pingCalls)
+			}
+		})
 	}
 }
 

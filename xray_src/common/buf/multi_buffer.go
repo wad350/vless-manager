@@ -12,6 +12,7 @@ import (
 func ReadAllToBytes(reader io.Reader) ([]byte, error) {
 	mb, err := ReadFrom(reader)
 	if err != nil {
+		ReleaseMulti(mb)
 		return nil, err
 	}
 	if mb.Len() == 0 {

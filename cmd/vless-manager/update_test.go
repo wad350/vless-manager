@@ -39,6 +39,7 @@ func TestBuiltReleasePackages(t *testing.T) {
 			if err := validateIPK(path, version, arch); err != nil {
 				t.Fatal(err)
 			}
+			assertIPKDataRootOwned(t, path)
 			otherArch := "mipsel-3.4"
 			if arch == otherArch {
 				otherArch = "aarch64-3.10"
@@ -50,6 +51,48 @@ func TestBuiltReleasePackages(t *testing.T) {
 				t.Fatal("wrong version accepted")
 			}
 		})
+	}
+}
+
+func assertIPKDataRootOwned(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	wrapper, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Close()
+	archive := tar.NewReader(wrapper)
+	for {
+		header, err := archive.Next()
+		if err != nil {
+			t.Fatalf("find data archive: %v", err)
+		}
+		if filepath.Base(header.Name) != "data.tar.gz" {
+			continue
+		}
+		data, err := gzip.NewReader(io.LimitReader(archive, header.Size))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer data.Close()
+		entries := tar.NewReader(data)
+		for {
+			entry, err := entries.Next()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entry.Uid != 0 || entry.Gid != 0 || entry.Uname != "root" || entry.Gname != "root" {
+				t.Fatalf("package entry %s retains build-host ownership: %d:%d (%s:%s)", entry.Name, entry.Uid, entry.Gid, entry.Uname, entry.Gname)
+			}
+		}
 	}
 }
 

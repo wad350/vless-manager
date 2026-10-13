@@ -93,9 +93,6 @@ func TestInvalidRequest(t *testing.T) {
 	client := NewClientSession(context.TODO(), 0)
 	common.Must(client.EncodeRequestHeader(expectedRequest, buffer))
 
-	buffer2 := buf.New()
-	buffer2.Write(buffer.Bytes())
-
 	sessionHistory := NewSessionHistory()
 	defer common.Close(sessionHistory)
 
@@ -132,9 +129,6 @@ func TestMuxRequest(t *testing.T) {
 	buffer := buf.New()
 	client := NewClientSession(context.TODO(), 0)
 	common.Must(client.EncodeRequestHeader(expectedRequest, buffer))
-
-	buffer2 := buf.New()
-	buffer2.Write(buffer.Bytes())
 
 	sessionHistory := NewSessionHistory()
 	defer common.Close(sessionHistory)

@@ -62,7 +62,7 @@ clean_routing() {
     iptables -t mangle -X VLESS_IN 2>/dev/null
     iptables -F VLESS_IN 2>/dev/null
     iptables -X VLESS_IN 2>/dev/null
-    # Experimental kernel TCP REDIRECT, also clean when returning to TUN.
+    # Remove legacy kernel TCP REDIRECT rules during upgrades.
     for iface in br0 br-lan; do
         while iptables -t nat -D PREROUTING -i "$iface" -p tcp -j VLESS_TCP 2>/dev/null; do :; done
     done

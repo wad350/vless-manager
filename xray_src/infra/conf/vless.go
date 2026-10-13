@@ -141,7 +141,11 @@ func (c *VLessInboundConfig) Build() (proto.Message, error) {
 				return false
 			}
 		}
-		config.Decryption = config.Decryption[27+len(s[2]):]
+		keyMaterial := config.Decryption[27+len(s[2]):]
+		if padding >= len(keyMaterial) {
+			return false
+		}
+		config.Decryption = keyMaterial
 		if padding > 0 {
 			config.Padding = config.Decryption[:padding-1]
 			config.Decryption = config.Decryption[padding:]
@@ -364,7 +368,11 @@ func (c *VLessOutboundConfig) Build() (proto.Message, error) {
 						return false
 					}
 				}
-				account.Encryption = account.Encryption[27+len(s[2]):]
+				keyMaterial := account.Encryption[27+len(s[2]):]
+				if padding >= len(keyMaterial) {
+					return false
+				}
+				account.Encryption = keyMaterial
 				if padding > 0 {
 					account.Padding = account.Encryption[:padding-1]
 					account.Encryption = account.Encryption[padding:]

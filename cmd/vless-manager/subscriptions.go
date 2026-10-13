@@ -112,21 +112,6 @@ type SubUserInfo struct {
 	Expire   int64 `json:"expire"`
 }
 
-// Used returns total bytes transferred (upload+download).
-func (u *SubUserInfo) Used() int64 { return u.Upload + u.Download }
-
-// Remaining returns bytes still available, or -1 if no quota is set.
-func (u *SubUserInfo) Remaining() int64 {
-	if u.Total <= 0 {
-		return -1
-	}
-	r := u.Total - u.Used()
-	if r < 0 {
-		return 0
-	}
-	return r
-}
-
 type Subscription struct {
 	ID           string        `json:"id"`
 	Name         string        `json:"name"`
@@ -295,25 +280,6 @@ func normalizeSubscriptionURL(raw string) string {
 	return raw
 }
 
-func fetchSubscription(url string) (*Subscription, error) {
-	return fetchSubscriptionWithTimeout(url, 15*time.Second)
-}
-
-// fetchSubscriptionWithTimeout is the explicit-timeout variant used by the
-// settings-aware refresh loop. Plain fetchSubscription keeps the 15 s default
-// for compatibility with the few call sites that don't have a Config handy.
-func fetchSubscriptionWithTimeout(url string, timeout time.Duration) (*Subscription, error) {
-	return fetchSubscriptionWithClientContext(context.Background(), url, subscriptionHTTPClient(timeout, nil))
-}
-
-func (s *apiServer) fetchSubscriptionURL(url string) (*Subscription, error) {
-	return s.fetchSubscriptionURLContext(context.Background(), url)
-}
-
-func (s *apiServer) fetchSubscriptionURLWithTimeout(url string, timeout time.Duration) (*Subscription, error) {
-	return s.fetchSubscriptionURLWithTimeoutContext(context.Background(), url, timeout)
-}
-
 func (s *apiServer) fetchSubscriptionURLContext(ctx context.Context, url string) (*Subscription, error) {
 	return s.fetchSubscriptionURLWithTimeoutContext(ctx, url, s.settingsSnapshot().SubscriptionFetchTimeout())
 }
@@ -356,7 +322,7 @@ func (s *apiServer) fetchSubscriptionURLWithTimeoutContext(ctx context.Context, 
 	}
 
 	// Force WAN routing when the main tunnel exists but is not healthy. This
-	// keeps the global checkbox honest: an unhealthy TUN is never used.
+	// keeps the global checkbox honest: an unhealthy tunnel is never used.
 	s.pm.event(serviceLogDebug, "subscription", "fetch.started",
 		"загрузка подписки через WAN",
 		field("op_id", opID),
@@ -395,10 +361,6 @@ func subscriptionHTTPClient(timeout time.Duration, dial func(context.Context, st
 		transport.DialContext = dial
 	}
 	return &http.Client{Timeout: timeout, Transport: transport}
-}
-
-func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription, error) {
-	return fetchSubscriptionWithClientContext(context.Background(), url, client)
 }
 
 func fetchSubscriptionWithClientContext(ctx context.Context, url string, client *http.Client) (*Subscription, error) {
@@ -688,14 +650,9 @@ type xrayOutbound struct {
 	} `json:"streamSettings"`
 }
 
-// parseXrayJSONServers accepts the subscription shape used by Xray clients:
+// parseXrayJSONServersDetailed accepts the subscription shape used by Xray clients:
 // either one complete config object or an array of configs. Each config can
 // contain several VLESS outbounds (auto-selection and whitelist profiles).
-func parseXrayJSONServers(body []byte) []VLESSServer {
-	servers, _ := parseXrayJSONServersDetailed(body)
-	return servers
-}
-
 func parseXrayJSONServersDetailed(body []byte) ([]VLESSServer, int) {
 	var configs []xraySubscriptionConfig
 	if err := json.Unmarshal(body, &configs); err != nil {
@@ -712,7 +669,7 @@ func parseXrayJSONServersDetailed(body []byte) ([]VLESSServer, int) {
 		var members []VLESSServer
 		for _, outbound := range cfg.Outbounds {
 			if strings.EqualFold(outbound.Protocol, "vless") {
-				parsed, skipped := xrayOutboundServersDetailed(cfg.Remarks, 1, outbound)
+				parsed, skipped := xrayOutboundServersDetailed(cfg.Remarks, outbound)
 				members = append(members, parsed...)
 				invalid += skipped
 			}
@@ -732,12 +689,7 @@ func parseXrayJSONServersDetailed(body []byte) ([]VLESSServer, int) {
 	return servers, invalid
 }
 
-func xrayOutboundServers(remarks string, profileVLESSCount int, outbound xrayOutbound) []VLESSServer {
-	servers, _ := xrayOutboundServersDetailed(remarks, profileVLESSCount, outbound)
-	return servers
-}
-
-func xrayOutboundServersDetailed(remarks string, profileVLESSCount int, outbound xrayOutbound) ([]VLESSServer, int) {
+func xrayOutboundServersDetailed(remarks string, outbound xrayOutbound) ([]VLESSServer, int) {
 	stream := outbound.StreamSettings
 	network := normalizeVLESSNetwork(stream.Network)
 	security := strings.ToLower(strings.TrimSpace(stream.Security))
@@ -745,9 +697,6 @@ func xrayOutboundServersDetailed(remarks string, profileVLESSCount int, outbound
 		security = "none"
 	}
 	name := strings.TrimSpace(remarks)
-	if profileVLESSCount > 1 && outbound.Tag != "" {
-		name = strings.TrimSpace(name + " · " + outbound.Tag)
-	}
 
 	var servers []VLESSServer
 	invalid := 0

@@ -44,9 +44,6 @@ func TestUDPQueuePreservesPayloadAndFullConeDestinations(t *testing.T) {
 		if *mb[0].UDP != wantDest {
 			t.Fatal("full-cone destination lost")
 		}
-		if &mb[0].Bytes()[0] != &want[0] {
-			t.Fatal("UDP payload was copied again")
-		}
 		if err := writer.WriteMultiBuffer(mb); err != nil {
 			t.Fatal(err)
 		}
@@ -64,32 +61,5 @@ func TestUDPQueuePreservesPayloadAndFullConeDestinations(t *testing.T) {
 	}
 	if _, err := conn.ReadMultiBuffer(); err != io.EOF {
 		t.Fatalf("closed UDP queue: %v", err)
-	}
-}
-
-func BenchmarkUDPQueueBuffer(b *testing.B) {
-	for _, legacy := range []bool{false, true} {
-		name := "owned_payload"
-		if legacy {
-			name = "legacy_second_copy"
-		}
-		b.Run(name, func(b *testing.B) {
-			data := make([]byte, 1200)
-			conn := &udpConn{egress: make(chan *packet, 1)}
-			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
-				conn.egress <- &packet{data: data}
-				if legacy {
-					e := <-conn.egress
-					buffer := buf.New()
-					_, _ = buffer.Write(e.data)
-					buffer.UDP = &e.dest
-					buf.ReleaseMulti(buf.MultiBuffer{buffer})
-				} else {
-					mb, _ := conn.ReadMultiBuffer()
-					buf.ReleaseMulti(mb)
-				}
-			}
-		})
 	}
 }

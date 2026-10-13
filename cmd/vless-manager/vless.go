@@ -38,8 +38,7 @@ func normalizeVLESSNetwork(network string) string {
 	case "http-upgrade", "http_upgrade":
 		return "httpupgrade"
 	case "splithttp":
-		// Xray's previous name for XHTTP. Official Xray does not implement
-		// either spelling, but canonicalizing it keeps filtering deterministic.
+		// Preserve share links using Xray's previous name for XHTTP.
 		return "xhttp"
 	default:
 		return strings.ToLower(strings.TrimSpace(network))

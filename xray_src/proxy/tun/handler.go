@@ -203,10 +203,6 @@ func (t *Handler) HandleConnection(conn net.Conn, destination net.Destination) {
 	}
 	source := net.DestinationFromAddr(remote)
 	isUDP := destination.Network == net.Network_UDP
-	var batchWriter buf.Writer
-	if tcpConn, ok := conn.(*gvisorTCPConn); ok {
-		batchWriter = &tcpBatchWriter{conn: tcpConn, counter: t.downlinkCounter}
-	}
 	if !isUDP && (t.uplinkCounter != nil || t.downlinkCounter != nil) {
 		conn = &stat.CounterConnection{
 			Connection:   conn,
@@ -251,9 +247,6 @@ func (t *Handler) HandleConnection(conn net.Conn, destination net.Destination) {
 	link := &transport.Link{
 		Reader: reader,
 		Writer: writer,
-	}
-	if batchWriter != nil {
-		link.Writer = batchWriter
 	}
 	if err := t.dispatcher.DispatchLink(ctx, destination, link); err != nil {
 		errors.LogError(ctx, errors.New("connection closed").Base(err))

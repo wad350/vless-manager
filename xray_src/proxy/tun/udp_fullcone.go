@@ -13,7 +13,7 @@ import (
 
 type packet struct {
 	data []byte
-	dest net.Destination
+	dest *net.Destination
 }
 
 // sub-handler specifically for udp connections under main handler
@@ -45,7 +45,7 @@ func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destina
 		select {
 		case conn.egress <- &packet{
 			data: data,
-			dest: dst,
+			dest: &dst,
 		}:
 		default:
 			errors.LogDebug(context.Background(), "drop udp with size ", len(data), " to ", dst.NetAddr(), " original ", conn.dst.NetAddr(), " > queue full")
@@ -71,7 +71,7 @@ func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destina
 	select {
 	case conn.egress <- &packet{
 		data: data,
-		dest: dst,
+		dest: &dst,
 	}:
 	default:
 		errors.LogDebug(context.Background(), "drop udp with size ", len(data), " to ", dst.NetAddr(), " original ", conn.dst.NetAddr(), " > queue full 2")
@@ -98,15 +98,22 @@ type udpConn struct {
 }
 
 func (c *udpConn) ReadMultiBuffer() (buf.MultiBuffer, error) {
-	e, ok := <-c.egress
-	if !ok {
-		return nil, io.EOF
+	for {
+		e, ok := <-c.egress
+		if !ok {
+			return nil, io.EOF
+		}
+
+		b := buf.New()
+		if _, err := b.Write(e.data); err != nil {
+			errors.LogErrorInner(context.Background(), err, "drop packet to ", e.dest, " with size ", len(e.data))
+			b.Release()
+			continue
+		}
+		b.UDP = e.dest
+
+		return buf.MultiBuffer{b}, nil
 	}
-	// HandlePacket owns this payload; no second copy into an 8 KiB buffer is
-	// needed. Keep the destination with the packet rather than allocating it.
-	b := buf.FromBytes(e.data)
-	b.UDP = &e.dest
-	return buf.MultiBuffer{b}, nil
 }
 
 // Read packets from the connection

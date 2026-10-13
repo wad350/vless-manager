@@ -52,11 +52,6 @@ func DecodeHeaderAddons(buffer *buf.Buffer, reader io.Reader) (*Addons, error) {
 		if err := proto.Unmarshal(buffer.Bytes(), addons); err != nil {
 			return nil, errors.New("failed to unmarshal addons protobuf value").Base(err)
 		}
-
-		// Verification.
-		switch addons.Flow {
-		default:
-		}
 	}
 
 	return addons, nil
@@ -174,6 +169,10 @@ func (r *LengthPacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	}
 	length := int32(r.cache[0])<<8 | int32(r.cache[1])
 	// fmt.Println("Read", length)
+	return readLengthPacketPayload(r.Reader, length, buf.New)
+}
+
+func readLengthPacketPayload(reader io.Reader, length int32, newBuffer func() *buf.Buffer) (buf.MultiBuffer, error) {
 	mb := make(buf.MultiBuffer, 0, length/buf.Size+1)
 	for length > 0 {
 		size := length
@@ -181,8 +180,10 @@ func (r *LengthPacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 			size = buf.Size
 		}
 		length -= size
-		b := buf.New()
-		if _, err := b.ReadFullFrom(r.Reader, size); err != nil {
+		b := newBuffer()
+		if _, err := b.ReadFullFrom(reader, size); err != nil {
+			b.Release()
+			buf.ReleaseMulti(mb)
 			return nil, errors.New("failed to read packet payload").Base(err)
 		}
 		mb = append(mb, b)

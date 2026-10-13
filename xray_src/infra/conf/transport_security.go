@@ -218,7 +218,10 @@ func (c *REALITYConfig) Build() (proto.Message, error) {
 			return nil, errors.New(`invalid "spiderX": `, c.SpiderX)
 		}
 		config.SpiderY = make([]int64, 10)
-		u, _ := url.Parse(c.SpiderX)
+		u, err := url.Parse(c.SpiderX)
+		if err != nil {
+			return nil, errors.New(`invalid "spiderX"`).Base(err)
+		}
 		q := u.Query()
 		parse := func(param string, index int) {
 			if q.Get(param) != "" {

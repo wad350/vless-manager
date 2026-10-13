@@ -88,14 +88,6 @@ func bypassDomainsFor(cfg *Config) []string {
 	return out
 }
 
-func fetchBypassWhitelist(client *http.Client) ([]string, error) {
-	return fetchBypassWhitelistContext(context.Background(), client)
-}
-
-func fetchBypassWhitelistContext(ctx context.Context, client *http.Client) ([]string, error) {
-	return fetchBypassDomainSource(ctx, client, bypassWhitelistURL)
-}
-
 func fetchBypassDomainSource(ctx context.Context, client *http.Client, source string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {

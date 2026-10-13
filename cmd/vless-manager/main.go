@@ -38,7 +38,7 @@ func main() {
 	// only one Go runtime to protect instead of two.
 	_ = os.WriteFile("/proc/self/oom_score_adj", []byte("-1000"), 0644)
 
-	// Raise fd limit for concurrent TUN and outbound connections.
+	// Raise fd limit for concurrent transparent-proxy and outbound connections.
 	_ = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &syscall.Rlimit{
 		Cur: 65536, Max: 65536,
 	})

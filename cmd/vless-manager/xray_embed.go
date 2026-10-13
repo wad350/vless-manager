@@ -284,10 +284,6 @@ func startTemporaryVLESSSOCKS(srv *VLESSServer, logs *ringBuffer) (engineHandle,
 
 var pingStartupWait = 300 * time.Millisecond
 
-func pingOneThroughVLESS(srv *VLESSServer, timeout time.Duration, testURL string) PingResult {
-	return pingOneThroughVLESSContext(context.Background(), srv, timeout, testURL)
-}
-
 func pingOneThroughVLESSContext(ctx context.Context, srv *VLESSServer, timeout time.Duration, testURL string) PingResult {
 	failed := PingResult{ServerID: srv.ID, ServerName: srv.Name, Address: srv.Address, Port: srv.Port, Protocol: describeProtocol(srv), LatencyMS: -1, CheckedAt: time.Now()}
 	if err := ctx.Err(); err != nil {

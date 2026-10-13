@@ -9,10 +9,6 @@ function esc(s) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function kv(k, v) {
-  return `<div class="k">${k}</div><div class="v">${v}</div>`;
-}
-
 function fmtBytes(n) {
   if (n < 1024) return n.toFixed(0) + ' B';
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
@@ -335,7 +331,6 @@ async function fetchStatus() {
     renderActiveConnection(s);
     renderConnectionHealth(s);
 
-    if (s.internet) renderInternetWidget(s.internet);
     if (s.failover) renderFailover(s.failover, s.route_ready !== false);
     updateStartButton(s);
     const subscriptionsPanel = document.getElementById('tab-subscriptions');
@@ -704,11 +699,6 @@ document.getElementById('tunnel-failover-toggle').addEventListener('change', asy
     fetchStatus();
   }
 });
-
-// Internet widget removed — its info lives in the Auto-failover card now.
-// fetchStatus no longer touches the widget; we keep renderInternetWidget as a
-// no-op stub for code that still references it.
-function renderInternetWidget(_i) {}
 
 document.getElementById('btn-start').addEventListener('click', async () => {
   const btn = document.getElementById('btn-start');
@@ -1769,6 +1759,10 @@ let settingsDraft = null;
 let settingsDefaults = null;
 let bypassStatus = null;
 let appUpdateStatus = null;
+let appUpdateHistory = null;
+let appUpdateHistoryLoading = false;
+let appUpdateHistoryShowAll = false;
+const appUpdateHistoryOpen = new Set();
 let appUpdatePollTimer = null;
 let appUpdateStatusInterval = null;
 let appUpdateRestartMonitor = false;
@@ -1791,13 +1785,14 @@ async function loadSettings() {
     resumeAppUpdateState();
     renderSettings();
     updateSettingsSavebar();
+    if (settingsActiveSection === 'system') loadAppUpdateHistory();
   } catch (e) {
     toast(e.message, 'err');
   }
 }
 
 function settingsGroupItems(group) {
-  return [...(group.items || []), ...(group.advanced || [])];
+  return [...(group.items || [])];
 }
 
 function settingsSectionItems(section) {
@@ -1846,6 +1841,7 @@ function selectSettingsSection(id) {
   if (!SETTINGS_SCHEMA.some(section => section.id === id)) return;
   settingsActiveSection = id;
   renderSettings();
+  if (id === 'system') loadAppUpdateHistory();
 }
 
 function renderSettingsNav() {
@@ -1882,7 +1878,7 @@ function renderSettings() {
 }
 
 function renderSettingsGroup(group) {
-  const visibleItems = (group.items || []).filter(settingIsVisible);
+  const visibleItems = group.items || [];
   return `<section class="settings-task-group">
     <div class="settings-task-heading">
       <h4>${esc(group.title)}</h4>
@@ -1891,14 +1887,6 @@ function renderSettingsGroup(group) {
     ${renderSettingsAction(group.action)}
     ${visibleItems.length ? `<div class="settings-rows">${visibleItems.map(item => renderSettingItem(item, settingsDraft[item.key])).join('')}</div>` : ''}
   </section>`;
-}
-
-function settingIsVisible(item) {
-  if (!item.visibleWhen) return true;
-  const actual = settingsDraft?.[item.visibleWhen.key];
-  if ('equals' in item.visibleWhen) return actual === item.visibleWhen.equals;
-  if ('notEquals' in item.visibleWhen) return actual !== item.visibleWhen.notEquals;
-  return true;
 }
 
 function renderSettingsAction(action) {
@@ -1956,6 +1944,7 @@ function renderAppUpdateAction() {
   const target = status.target_version || (status.available ? status.latest_version : '');
   const upToDate = status.state === 'ready' && !status.available;
   const successful = upToDate || status.state === 'complete';
+  const releaseURL = safeGitHubReleaseURL(status.release_url);
 
   return `<div class="settings-action app-update" id="app-update-center">
     <div class="app-update-header">
@@ -1965,7 +1954,7 @@ function renderAppUpdateAction() {
         <div><span>${status.available || busy ? 'Версия для установки' : 'Последний релиз'}</span><b>${latest === 'ещё не проверялась' ? esc(latest) : `v${esc(target || latest)}`}</b></div>
       </div>
       <div class="app-update-actions">
-        ${status.release_url ? `<a class="btn btn-ghost btn-sm" href="${esc(status.release_url)}" target="_blank" rel="noopener">О релизе</a>` : ''}
+        ${releaseURL ? `<a class="btn btn-ghost btn-sm" href="${esc(releaseURL)}" target="_blank" rel="noopener noreferrer">О релизе</a>` : ''}
         <button class="btn btn-ghost btn-sm" onclick="checkAppUpdate(this)" ${busy ? 'disabled' : ''}>
           ${status.state === 'checking' ? '<span class="spinner"></span>' : 'Проверить'}
         </button>
@@ -1995,7 +1984,103 @@ function renderAppUpdateAction() {
     </div>
     ${checkWarning}
     ${error}
+    ${renderAppUpdateHistory()}
   </div>`;
+}
+
+function safeGitHubReleaseURL(value) {
+  try {
+    const url = new URL(value);
+    if (url.origin !== 'https://github.com' || url.username || url.password ||
+        !/^\/[^/]+\/[^/]+\/releases\/tag\/.+/.test(url.pathname)) return '';
+    return url.href;
+  } catch (_) { return ''; }
+}
+
+function compareAppReleaseVersions(a, b) {
+  const parse = value => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(String(value || '').trim());
+    if (!match) return null;
+    const parts = match.slice(1).map(Number);
+    return parts.every(Number.isSafeInteger) ? parts : null;
+  };
+  const left = parse(a), right = parse(b);
+  if (!left || !right) return null;
+  for (let i = 0; i < 3; i++) {
+    if (left[i] !== right[i]) return left[i] > right[i] ? 1 : -1;
+  }
+  return 0;
+}
+
+async function loadAppUpdateHistory(refresh = false) {
+  if (appUpdateHistoryLoading) return;
+  appUpdateHistoryLoading = true;
+  if (settingsActiveSection === 'system') renderSettings();
+  try {
+    appUpdateHistory = await api('GET', '/update/history');
+    if (refresh || (!appUpdateHistory.complete && !appUpdateHistory.error && !appUpdateHistory.busy)) {
+      appUpdateHistory = await api('POST', '/update/history', {});
+    }
+  } catch (e) {
+    try { appUpdateHistory = await api('GET', '/update/history'); } catch (_) {}
+    appUpdateHistory = { ...(appUpdateHistory || {}), error: e.message };
+  } finally {
+    appUpdateHistoryLoading = false;
+    if (settingsActiveSection === 'system') renderSettings();
+  }
+}
+
+function toggleAppUpdateHistory() {
+  appUpdateHistoryShowAll = !appUpdateHistoryShowAll;
+  renderSettings();
+}
+
+function rememberAppReleaseNote(details) {
+  const tag = details.dataset.releaseTag;
+  if (details.open) appUpdateHistoryOpen.add(tag);
+  else appUpdateHistoryOpen.delete(tag);
+}
+
+function renderAppUpdateHistory() {
+  const history = appUpdateHistory || {};
+  const releases = Array.isArray(history.releases) ? history.releases : [];
+  const current = appUpdateStatus?.current_version || history.current_version;
+  const latest = appUpdateStatus?.latest_version || history.latest_version;
+  const comparable = compareAppReleaseVersions(current, current) !== null;
+  const visible = appUpdateHistoryShowAll ? releases : releases.filter(release => {
+    if (!release.version || release.prerelease) return false;
+    if (comparable && compareAppReleaseVersions(release.version, current) <= 0) return false;
+    const toLatest = compareAppReleaseVersions(release.version, latest);
+    return toLatest === null || toLatest <= 0;
+  });
+  const loading = appUpdateHistoryLoading || history.busy;
+  const checked = history.checked_at ? new Date(history.checked_at).toLocaleString('ru') : '';
+  const missingLatest = history.complete && latest && !releases.some(release =>
+    !release.prerelease && compareAppReleaseVersions(release.version, latest) === 0);
+  const warning = history.error
+    ? `${history.complete ? 'Показана сохранённая история. ' : ''}Не удалось загрузить полный список: ${history.error}`
+    : missingLatest ? 'В сохранённой истории пока нет последнего релиза. Обновите историю.' : '';
+  const empty = loading ? 'Загружаем все страницы GitHub Releases…'
+    : !history.complete ? 'История ещё не загружена.'
+      : comparable ? 'Между установленной и последней версией нет новых релизов.' : 'Нет опубликованных стабильных версий.';
+  return `<section class="app-update-history" aria-label="История изменений">
+    <div class="app-update-history-header">
+      <div><h5>Что изменилось</h5><p>${appUpdateHistoryShowAll ? 'Все опубликованные релизы, включая установленную и более ранние версии.' : comparable ? 'Все стабильные версии после установленной до последнего релиза.' : 'Опубликованные стабильные версии проекта.'}</p></div>
+      <button class="btn btn-ghost btn-sm" onclick="loadAppUpdateHistory(true)" ${loading || appUpdateIsBusy() ? 'disabled' : ''}>${loading ? '<span class="spinner"></span> Загрузка' : 'Обновить историю'}</button>
+    </div>
+    ${warning ? `<div class="app-update-alert warning"><span>${esc(warning)}</span></div>` : ''}
+    ${history.complete ? `<div class="app-update-history-toolbar"><span>${esc(checked)} · релизов: ${visible.length} из ${releases.length}</span><button class="btn btn-ghost btn-sm" onclick="toggleAppUpdateHistory()">${appUpdateHistoryShowAll ? 'Только новые версии' : 'Вся история'}</button></div>` : ''}
+    ${visible.length ? `<div class="app-update-release-list">${visible.map(release => {
+      const url = safeGitHubReleaseURL(release.release_url);
+      const installed = compareAppReleaseVersions(release.version, current) === 0 && !release.prerelease;
+      const label = release.prerelease ? 'Предварительная версия' : !release.version ? 'Другой тег' : installed ? 'Установлена' : '';
+      const published = release.published_at ? new Date(release.published_at).toLocaleDateString('ru') : '';
+      return `<details class="app-release-note" data-release-tag="${esc(release.tag)}" ontoggle="rememberAppReleaseNote(this)" ${appUpdateHistoryOpen.has(release.tag) ? 'open' : ''}>
+        <summary><b>${esc(release.tag)}</b><span>${esc(release.name || '')}</span><small>${esc([label, published].filter(Boolean).join(' · '))}</small></summary>
+        <div class="app-release-note-body">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Открыть релиз на GitHub ↗</a>` : ''}<pre>${esc(release.body || 'Описание изменений не добавлено к этому релизу.')}</pre></div>
+      </details>`;
+    }).join('')}</div>` : `<p class="app-update-history-empty">${esc(empty)}</p>`}
+  </section>`;
 }
 
 function renderAppUpdateBadge() {
@@ -2073,6 +2158,7 @@ async function checkAppUpdate(btn) {
     appUpdateStatus = await api('POST', '/update/check', {});
     renderAppUpdateBadge();
     renderSettings();
+    loadAppUpdateHistory(true);
   } catch (e) {
     await refreshAppUpdateStatus();
     toast(e.message, 'err');

@@ -83,44 +83,36 @@ func run(out string, generate bool) error {
 	if err != nil {
 		return err
 	}
-	rel, err := filepath.Rel(strings.TrimSpace(string(cache)), out)
-	if err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
-		return fmt.Errorf("staging directory must be outside the module cache")
-	}
-	if err := os.MkdirAll(out, 0755); err != nil {
+	if err := outsideModuleCache(out, strings.TrimSpace(string(cache))); err != nil {
 		return err
 	}
-	// A fresh copy prevents removed patch files from surviving a rebuild.
-	staged, err := os.MkdirTemp(out, "xcrypto-")
-	if err != nil {
-		return err
-	}
-	if err := copyTree(module.Dir, staged); err != nil {
-		return err
-	}
-	if err := copyTree(overlay, filepath.Join(staged, "chacha20")); err != nil {
-		return err
-	}
-	if err := copyTree(filepath.Join(root, "packaging", "mipscrypto", "_aead"), filepath.Join(staged, "chacha20poly1305")); err != nil {
-		return err
-	}
-	if err := stagePoly1305(filepath.Join(staged, "internal", "poly1305"), filepath.Join(root, "packaging", "mipscrypto", "_poly1305")); err != nil {
-		return err
-	}
-	for _, name := range []string{"go.mod", "go.sum"} {
-		data, err := os.ReadFile(filepath.Join(root, name))
+	if err := withStagingLock(out, func() error {
+		inputs, err := readStagingInputs(root, module.Dir)
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(out, "crypto."+name[3:]), data, 0644); err != nil {
+		staged, err := cachedStage(out, inputs, func(dst string) error {
+			if err := stageCryptoTree(root, module.Dir, dst); err != nil {
+				return err
+			}
+			// Never publish a tree copied while its input files were changing.
+			current, err := readStagingInputs(root, module.Dir)
+			if err != nil {
+				return err
+			}
+			if stagingKey(current) != stagingKey(inputs) {
+				return fmt.Errorf("MIPS crypto inputs changed during staging; retry the build")
+			}
+			return nil
+		})
+		if err != nil {
 			return err
 		}
+		return writeRootModules(root, out, staged)
+	}); err != nil {
+		return err
 	}
 	modfile := filepath.Join(out, "crypto.mod")
-	cmd := exec.Command("go", "mod", "edit", "-modfile="+modfile, "-replace=golang.org/x/crypto="+staged)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("stage module replacement: %w: %s", err, output)
-	}
 	fmt.Println(modfile)
 	return nil
 }

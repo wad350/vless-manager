@@ -28,7 +28,6 @@ type tableCacheKey struct {
 }
 
 var (
-	tableCache    sync.Map
 	tableSetCache sync.Map
 
 	basePatternsOnce sync.Once

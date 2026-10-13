@@ -458,15 +458,12 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 	}
 
 	maxUploadSize := scMaxEachPostBytes.rand()
-	// WithSizeLimit(0) will still allow single bytes to pass, and a lot of
-	// code relies on this behavior. Subtract 1 so that together with
-	// uploadWriter wrapper, exact size limits can be enforced
-	// uploadPipeReader, uploadPipeWriter := pipe.New(pipe.WithSizeLimit(maxUploadSize - 1))
+	// The pipe can accept one buffer beyond its soft watermark. Reserve buf.Size
+	// to account for that buffer; POST size is enforced later by buf.SplitSize.
 	uploadPipeReader, uploadPipeWriter := pipe.New(pipe.WithSizeLimit(max(0, maxUploadSize-buf.Size)))
 
 	conn.writer = uploadWriter{
 		uploadPipeWriter,
-		maxUploadSize,
 	}
 
 	go func() {
@@ -540,26 +537,13 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 	return stat.Connection(&conn), nil
 }
 
-// A wrapper around pipe that ensures the size limit is exactly honored.
-//
-// The MultiBuffer pipe accepts any single WriteMultiBuffer call even if that
-// single MultiBuffer exceeds the size limit, and then starts blocking on the
-// next WriteMultiBuffer call. This means that ReadMultiBuffer can return more
-// bytes than the size limit. We work around this by splitting a potentially
-// too large write up into multiple.
+// uploadWriter feeds the pipe one buffer at a time.
+// POST size limits are applied to batches read from the pipe in Dial.
 type uploadWriter struct {
 	*pipe.Writer
-	maxLen int32
 }
 
 func (w uploadWriter) Write(b []byte) (int, error) {
-	/*
-		capacity := int(w.maxLen - w.Len())
-		if capacity > 0 && capacity < len(b) {
-			b = b[:capacity]
-		}
-	*/
-
 	buffer := buf.MultiBufferContainer{}
 	common.Must2(buffer.Write(b))
 

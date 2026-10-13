@@ -17,7 +17,6 @@ const (
 	vlessInputChain  = "VLESS_IN"
 	vlessTCPChain    = "VLESS_TCP"    // Legacy REDIRECT cleanup.
 	vlessTCPInput    = "VLESS_TCP_IN" // Legacy REDIRECT cleanup.
-	tunFwmark        = 0x1
 	tunRtTable       = "100"
 	WANFwmark        = 0x9911
 )
@@ -224,14 +223,6 @@ func installGlobalRoute(plan [][]string, command func(string, ...string) (string
 			cleanup()
 			return fmt.Errorf("install route %s: %w (%s)", strings.Join(args, " "), err, output)
 		}
-	}
-	return nil
-}
-
-func requireRouteCommand(stage, name string, args ...string) error {
-	output, err := run(name, args...)
-	if err != nil {
-		return fmt.Errorf("%s: %s %v: %w (%s)", stage, name, args, err, output)
 	}
 	return nil
 }

@@ -3,7 +3,6 @@ package core_test
 import (
 	"context"
 	"testing"
-	_ "unsafe"
 
 	. "github.com/xtls/xray-core/core"
 )

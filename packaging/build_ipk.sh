@@ -100,7 +100,6 @@ export PKG_NAME
 export IPK
 python3 <<'PY'
 import os
-import gzip
 import tarfile
 from pathlib import Path
 build = Path('.').resolve()
@@ -142,6 +141,10 @@ with tarfile.open(pkg / 'data.tar.gz', 'w:gz', format=tarfile.USTAR_FORMAT) as t
             path = root_path / name
             arcname = path.relative_to(pkg)
             tarinfo = tar.gettarinfo(str(path), arcname=str(arcname))
+            tarinfo.uid = 0
+            tarinfo.gid = 0
+            tarinfo.uname = 'root'
+            tarinfo.gname = 'root'
             if tarinfo.isreg():
                 with open(path, 'rb') as f:
                     tar.addfile(tarinfo, f)

@@ -350,10 +350,6 @@ func (s *speedTestService) fail(err error) {
 	})
 }
 
-func defaultSpeedTestConfig() speedTestConfig {
-	return cloudflareSpeedTestConfig(newSpeedTestHTTPClient(speedTestWorkers))
-}
-
 func newSpeedTestHTTPClient(workers int) *http.Client {
 	transport := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
@@ -439,11 +435,6 @@ type speedTestRUServer struct {
 	Name    string
 	City    string
 	Owner   string
-}
-
-func prepareSpeedTestConfig(ctx context.Context, provider string) (speedTestConfig, error) {
-	client := newSpeedTestHTTPClient(speedTestWorkers)
-	return prepareSpeedTestConfigWithClient(ctx, provider, client)
 }
 
 func prepareSpeedTestConfigWithClient(ctx context.Context, provider string, client *http.Client) (speedTestConfig, error) {
@@ -889,7 +880,7 @@ func transferSpeedTestWorker(ctx context.Context, cfg speedTestConfig, method, e
 
 func transferSpeedTestRequest(ctx context.Context, cfg speedTestConfig, method, endpoint string, size int64, transferred *atomic.Int64) error {
 	var body io.Reader
-	requestURL := speedTestRequestURL(endpoint, cfg.DownloadParam, size, cfg.DownloadUnit, cfg.CacheBust)
+	var requestURL string
 	if method == http.MethodGet {
 		requestURL = speedTestRequestURL(endpoint, cfg.DownloadParam, size, cfg.DownloadUnit, cfg.CacheBust)
 	} else {
@@ -970,10 +961,6 @@ type countingWriter struct{ count *atomic.Int64 }
 func (w *countingWriter) Write(p []byte) (int, error) {
 	w.count.Add(int64(len(p)))
 	return len(p), nil
-}
-
-func speedTestDownloadURL(endpoint string, size int64) string {
-	return speedTestRequestURL(endpoint, "bytes", size, 1, false)
 }
 
 func speedTestRequestURL(endpoint, parameter string, size, unit int64, cacheBust bool) string {

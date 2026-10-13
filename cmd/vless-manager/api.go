@@ -83,10 +83,6 @@ type apiServer struct {
 	pingRunMu sync.Mutex
 }
 
-func newAPIServer(pm *ProcessManager, cfg *Config, subs []*Subscription, cfgPath, subPath string) *apiServer {
-	return newAPIServerWithRuntimeDir(pm, cfg, subs, cfgPath, subPath, filepath.Dir(cfgPath))
-}
-
 func newAPIServerWithRuntimeDir(pm *ProcessManager, cfg *Config, subs []*Subscription, cfgPath, subPath, runtimeDir string) *apiServer {
 	s := &apiServer{
 		pm: pm, cfg: cfg, subs: subs, cfgPath: cfgPath, subPath: subPath,
@@ -622,13 +618,12 @@ func (s *apiServer) routes() {
 	s.mux.HandleFunc("/api/ping/auto-select", s.handlePingAutoSelect)
 	// Parse URI
 	s.mux.HandleFunc("/api/parse-uri", s.handleParseURI)
-	// Traffic stats (tun0 rx/tx bytes since interface up)
 	s.mux.HandleFunc("/api/traffic", s.handleTraffic)
 	s.mux.HandleFunc("/api/speedtest", s.handleSpeedTest)
 	// Version info (manager + bundled Xray)
 	s.mux.HandleFunc("/api/version", s.handleVersion)
-	// Application updates from signed-by-hash GitHub Release assets.
 	s.mux.HandleFunc("/api/update", s.handleUpdate)
+	s.mux.HandleFunc("/api/update/history", s.handleUpdateHistory)
 	s.mux.HandleFunc("/api/update/check", s.handleUpdateCheck)
 	s.mux.HandleFunc("/api/update/install", s.handleUpdateInstall)
 	s.mux.HandleFunc("/api/operations", s.handleOperations)
@@ -1804,8 +1799,9 @@ func (s *apiServer) handleSubscriptionByID(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		sub.ID = id
-		preserveSubscriptionDisplayName(sub, &current)
-		preserveSubscriptionOptions(sub, &current)
+		// User choices may have changed while the catalog was downloading.
+		preserveSubscriptionDisplayName(sub, s.subs[idx])
+		preserveSubscriptionOptions(sub, s.subs[idx])
 		previousConfig := cloneConfig(s.cfg)
 		previousSubs := cloneSubscriptions(s.subs)
 		s.subs[idx] = sub
@@ -2256,10 +2252,6 @@ func rotatePriorityGroups(groups []priorityServerGroup, activeID string) []prior
 	return rotated
 }
 
-func (s *apiServer) findBestPrioritized(excludeID string, rotateFromExcluded bool) (*VLESSServer, *PingResult) {
-	return s.findBestPrioritizedWithCache(excludeID, rotateFromExcluded, false, 0)
-}
-
 func (s *apiServer) findBestPrioritizedWithCache(excludeID string, rotateFromExcluded, useCache bool, maxAge time.Duration) (*VLESSServer, *PingResult) {
 	stopGeneration := s.pingStopGeneration()
 	s.mu.RLock()
@@ -2288,10 +2280,14 @@ func (s *apiServer) findBestPrioritizedWithCache(excludeID string, rotateFromExc
 			field("op_id", opID),
 			field("subscription", group.Name),
 			field("servers", len(candidates)))
-		results, cacheHit := s.freshCachedResults(candidates, maxAge)
-		cacheComplete := cacheHit
-		if useCache && !cacheHit {
-			results, cacheHit = s.freshReachableCachedResults(candidates, maxAge)
+		var results []PingResult
+		cacheHit, cacheComplete := false, false
+		if useCache {
+			results, cacheHit = s.freshCachedResults(candidates, maxAge)
+			cacheComplete = cacheHit
+			if !cacheHit {
+				results, cacheHit = s.freshReachableCachedResults(candidates, maxAge)
+			}
 		}
 		if !useCache || !cacheHit {
 			results = s.pingServersNamed(candidates, group.Name)
@@ -2307,7 +2303,6 @@ func (s *apiServer) findBestPrioritizedWithCache(excludeID string, rotateFromExc
 		if s.pingStoppedSince(stopGeneration) {
 			return nil, nil
 		}
-		sortByLatency(results)
 		best := fastestReachable(results)
 		if best == nil {
 			s.pm.event(serviceLogWarn, "priority", "subscription.failed",
@@ -2348,10 +2343,14 @@ func (s *apiServer) findBestFastest(excludeID string, useCache bool, maxAge time
 		return nil, nil
 	}
 	opID := s.pm.nextOperationID("fastest")
-	results, cacheHit := s.freshCachedResults(candidates, maxAge)
-	cacheComplete := cacheHit
-	if useCache && !cacheHit {
-		results, cacheHit = s.freshReachableCachedResults(candidates, maxAge)
+	var results []PingResult
+	cacheHit, cacheComplete := false, false
+	if useCache {
+		results, cacheHit = s.freshCachedResults(candidates, maxAge)
+		cacheComplete = cacheHit
+		if !cacheHit {
+			results, cacheHit = s.freshReachableCachedResults(candidates, maxAge)
+		}
 	}
 	if !useCache || !cacheHit {
 		results = s.pingServersNamed(candidates, "Все подписки")
@@ -2363,7 +2362,6 @@ func (s *apiServer) findBestFastest(excludeID string, useCache bool, maxAge time
 			field("cache_complete", cacheComplete),
 			field("cache_max_age_ms", maxAge.Milliseconds()))
 	}
-	sortByLatency(results)
 	best := fastestReachable(results)
 	if best == nil {
 		s.pm.event(serviceLogWarn, "priority", "global.failed",
@@ -2498,8 +2496,7 @@ func (s *apiServer) refreshAllSubscriptionsCore(ctx context.Context, report func
 		if sub.Disabled {
 			continue
 		}
-		item := pending{id: sub.ID, name: sub.Name, sub: *sub}
-		item.sub.Servers = append([]VLESSServer(nil), sub.Servers...)
+		item := pending{id: sub.ID, name: sub.Name, sub: *cloneSubscription(sub)}
 		work = append(work, item)
 	}
 	s.mu.RUnlock()
@@ -2528,8 +2525,6 @@ func (s *apiServer) refreshAllSubscriptionsCore(ctx context.Context, report func
 		results[i] = fetched{id: w.id, sub: sub, err: err}
 		if err == nil {
 			sub.ID = w.id
-			preserveSubscriptionDisplayName(sub, &w.sub)
-			preserveSubscriptionOptions(sub, &w.sub)
 			migratedPings := s.pingCache.MigrateEquivalent(w.sub.Servers, sub.Servers)
 			if migratedPings > 0 {
 				s.pm.event(serviceLogInfo, "subscription", "ping_history.migrated",
@@ -2561,6 +2556,9 @@ func (s *apiServer) refreshAllSubscriptionsCore(ctx context.Context, report func
 			if r.err != nil {
 				s.subs[i].Error = r.err.Error()
 			} else {
+				// Merge the fetched catalog with the current user choices under lock.
+				preserveSubscriptionDisplayName(r.sub, sub)
+				preserveSubscriptionOptions(r.sub, sub)
 				s.subs[i] = r.sub
 			}
 			break

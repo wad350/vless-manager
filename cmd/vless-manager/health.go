@@ -140,7 +140,7 @@ func (h *healthMonitor) Check() InternetStatus {
 
 // wanDialer returns a net.Dialer that marks all outgoing sockets with
 // WANFwmark via SO_MARK. Combined with the "fwmark X lookup main" ip rule
-// added in EnableGlobalRoute, this forces these connections to bypass tun0
+// added in EnableGlobalRoute, this forces these connections to bypass TPROXY
 // and use the main routing table (WAN).
 func wanDialer(timeout time.Duration) *net.Dialer {
 	return &net.Dialer{
@@ -172,13 +172,6 @@ func wanDialContext(timeout time.Duration) func(context.Context, string, string)
 	dialer := wanDialer(timeout)
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		return dialer.DialContext(ctx, wanProbeNetwork(network), address)
-	}
-}
-
-func wanDial(timeout time.Duration) func(string, string) (net.Conn, error) {
-	dialer := wanDialer(timeout)
-	return func(network, address string) (net.Conn, error) {
-		return dialer.Dial(wanProbeNetwork(network), address)
 	}
 }
 

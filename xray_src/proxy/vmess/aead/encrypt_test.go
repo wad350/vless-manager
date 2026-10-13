@@ -54,8 +54,6 @@ func TestOpenVMessAEADHeader4(t *testing.T) {
 		var keyw [16]byte
 		copy(keyw[:], key)
 		sealed := SealVMessAEADHeader(keyw, TestHeader)
-		var sealedm [16]byte
-		copy(sealedm[:], sealed)
 		sealed[i] ^= 0xff
 		AEADR := bytes.NewReader(sealed)
 
@@ -82,8 +80,6 @@ func TestOpenVMessAEADHeader4Massive(t *testing.T) {
 			var keyw [16]byte
 			copy(keyw[:], key)
 			sealed := SealVMessAEADHeader(keyw, TestHeader)
-			var sealedm [16]byte
-			copy(sealedm[:], sealed)
 			sealed[i] ^= 0xff
 			AEADR := bytes.NewReader(sealed)
 

@@ -74,12 +74,6 @@ func describeProtocol(srv *VLESSServer) string {
 	return fmt.Sprintf("VLESS %s (%s)", sec, net)
 }
 
-// pingViaSOCKS performs HTTP GET → testURL through a SOCKS5 proxy.
-// testURL may be blank — defaultPingTestURL is used in that case.
-func pingViaSOCKS(srv *VLESSServer, socksPort int, timeout time.Duration, testURL string) PingResult {
-	return pingViaSOCKSContext(context.Background(), srv, socksPort, timeout, testURL)
-}
-
 func pingViaSOCKSContext(ctx context.Context, srv *VLESSServer, socksPort int, timeout time.Duration, testURL string) PingResult {
 	res := PingResult{
 		ServerID:   srv.ID,
@@ -153,7 +147,7 @@ func pingHTTPStatusOK(status int) bool {
 	return status >= http.StatusOK && status < http.StatusBadRequest
 }
 
-// pingBatchViaXray tests each server with a real VLESS connection by
+// pingBatchViaXrayContext tests each server with a real VLESS connection by
 // starting a temporary embedded Xray per probe (SOCKS5 inbound + VLESS
 // outbound), measuring HTTP GET → testURL through it, then closing.
 //
@@ -163,10 +157,6 @@ func pingHTTPStatusOK(status int) bool {
 //	>= 2 → fan-out via a semaphore with the exact configured concurrency
 //
 // onDone is invoked per server as its result lands; may be nil.
-func pingBatchViaXray(servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
-	return pingBatchViaXrayContext(context.Background(), servers, timeout, testURL, maxParallel, onDone)
-}
-
 func pingBatchViaXrayContext(ctx context.Context, servers []VLESSServer, timeout time.Duration, testURL string, maxParallel int, onDone func(int, PingResult)) []PingResult {
 	if containsServerGroup(servers) {
 		return pingServerGroups(ctx, servers, timeout, testURL, maxParallel, onDone)
@@ -191,9 +181,6 @@ func pingBatchViaXrayContext(ctx context.Context, servers []VLESSServer, timeout
 			if ctx.Err() != nil {
 				break
 			}
-			if results[i].Incompat {
-				continue
-			}
 			r := pingOneThroughVLESSContext(ctx, &servers[i], timeout, testURL)
 			results[i] = r
 			if onDone != nil {
@@ -207,9 +194,6 @@ func pingBatchViaXrayContext(ctx context.Context, servers []VLESSServer, timeout
 	sem := make(chan struct{}, maxParallel)
 	var wg sync.WaitGroup
 	for i := range servers {
-		if results[i].Incompat {
-			continue
-		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -313,36 +297,19 @@ func pingServerGroups(ctx context.Context, servers []VLESSServer, timeout time.D
 	return results
 }
 
-// pingTCPFallback — raw TCP-connect to VLESS host:port, used as fallback
-// when a temporary Xray instance cannot be started.
-func pingTCPFallback(srv *VLESSServer, timeout time.Duration) PingResult {
-	res := PingResult{
-		ServerID:   srv.ID,
-		ServerName: srv.Name,
-		Address:    srv.Address,
-		Port:       srv.Port,
-		Protocol:   describeProtocol(srv),
-		LatencyMS:  -1,
-		CheckedAt:  time.Now(),
-	}
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", srv.Address, srv.Port), timeout)
-	if err != nil {
-		res.Error = err.Error()
-		return res
-	}
-	conn.Close()
-	res.LatencyMS = time.Since(start).Milliseconds()
-	return res
-}
-
+// fastestReachable returns the first minimum without reordering results.
 func fastestReachable(results []PingResult) *PingResult {
+	var best *PingResult
 	for i := range results {
-		if results[i].LatencyMS >= 0 && !results[i].Incompat {
-			return &results[i]
+		result := &results[i]
+		if result.LatencyMS < 0 || result.Incompat {
+			continue
+		}
+		if best == nil || result.LatencyMS < best.LatencyMS {
+			best = result
 		}
 	}
-	return nil
+	return best
 }
 
 // sortByLatency: reachable (asc) → unreachable → incompatible.

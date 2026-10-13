@@ -37,12 +37,6 @@ func OnDiscard(f func(int)) Option {
 	return func(opt *pipeOption) { opt.onDiscard = f }
 }
 
-// YieldOverflow gives a ready consumer one scheduling opportunity before a
-// discard. It never waits for downstream I/O and leaves the byte limit intact.
-func YieldOverflow() Option {
-	return func(opt *pipeOption) { opt.yieldOverflow = true }
-}
-
 // OptionsFromContext returns a list of Options from context.
 func OptionsFromContext(ctx context.Context) []Option {
 	var opt []Option

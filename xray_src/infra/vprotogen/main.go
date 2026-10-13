@@ -5,8 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"go/build"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,21 +96,6 @@ Download %s v%s or later from https://github.com/protocolbuffers/protobuf/releas
 	return path, nil
 }
 
-func getProjectProtocVersion(url string) (string, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", errors.New("can not get the version of protobuf used in xray project")
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", errors.New("can not read from body")
-	}
-	versionRegexp := regexp.MustCompile(`\/\/\s*protoc\s*v\d+\.(\d+\.\d+)`)
-	matched := versionRegexp.FindStringSubmatch(string(body))
-	return matched[1], nil
-}
-
 func getInstalledProtocVersion(protocPath string) (string, error) {
 	cmd := exec.Command(protocPath, "--version")
 	cmd.Env = append(cmd.Env, os.Environ()...)
@@ -174,13 +157,6 @@ func main() {
 		suffix = ".exe"
 	}
 
-	/*
-		targetedVersion, err := getProjectProtocVersion("https://raw.githubusercontent.com/XTLS/Xray-core/HEAD/core/config.pb.go")
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-	*/
 	targetedVersion := ""
 
 	protoc, err := whichProtoc(suffix, targetedVersion)

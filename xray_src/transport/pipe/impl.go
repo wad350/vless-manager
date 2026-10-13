@@ -3,7 +3,6 @@ package pipe
 import (
 	"errors"
 	"io"
-	"runtime"
 	"sync"
 	"time"
 
@@ -24,7 +23,6 @@ const (
 type pipeOption struct {
 	limit           int32 // maximum buffer size in bytes
 	discardOverflow bool
-	yieldOverflow   bool
 	onDiscard       func(int)
 }
 
@@ -154,7 +152,6 @@ func (p *pipe) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		return nil
 	}
 
-	yielded := false
 	for {
 		err := p.writeMultiBufferInternal(mb)
 		if err == nil {
@@ -164,11 +161,6 @@ func (p *pipe) WriteMultiBuffer(mb buf.MultiBuffer) error {
 
 		if err == errBufferFull {
 			if p.option.discardOverflow {
-				if p.option.yieldOverflow && !yielded {
-					yielded = true
-					runtime.Gosched()
-					continue
-				}
 				if p.option.onDiscard != nil {
 					p.option.onDiscard(len(mb))
 				}

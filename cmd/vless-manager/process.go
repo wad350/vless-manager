@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"net"
 	"sort"
 	"strconv"
@@ -88,10 +86,6 @@ func newRingBuffer() *ringBuffer {
 		entries:  make([]serviceLogEntry, logBufSize),
 		minLevel: serviceLogInfo,
 	}
-}
-
-func (r *ringBuffer) write(line string) {
-	r.logEvent(serviceLogInfo, "xray", "runtime", line)
 }
 
 func (r *ringBuffer) setLevel(value string) {
@@ -194,18 +188,6 @@ func formatServiceLogEntry(entry serviceLogEntry) string {
 	return b.String()
 }
 
-func (r *ringBuffer) Lines(since int) ([]string, int) {
-	entries, seq := r.Entries(since)
-	if len(entries) == 0 {
-		return nil, seq
-	}
-	lines := make([]string, len(entries))
-	for i, entry := range entries {
-		lines[i] = formatServiceLogEntry(entry)
-	}
-	return lines, seq
-}
-
 func (r *ringBuffer) Entries(since int) ([]serviceLogEntry, int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -253,7 +235,6 @@ type ProcessManager struct {
 	running     bool
 	startedAt   time.Time
 	lastErr     string
-	dataDir     string
 	routeHost   string
 	routeReady  bool
 	routeMode   routeMode
@@ -264,8 +245,7 @@ type ProcessManager struct {
 
 func NewProcessManager(dataDir string) *ProcessManager {
 	return &ProcessManager{
-		logs:    newRingBuffer(),
-		dataDir: dataDir,
+		logs: newRingBuffer(),
 	}
 }
 
@@ -525,27 +505,6 @@ func (pm *ProcessManager) routeGuard() {
 				field("endpoint", endpoint))
 		}
 		pm.mu.Unlock()
-	}
-}
-
-// waitForPort polls addr until it's listening or deadline passes.
-// Kept for potential future use (e.g. in integration tests).
-func waitForPort(addr string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
-			c.Close()
-			return true
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return false
-}
-
-func pipeLog(rb *ringBuffer, r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		rb.write(scanner.Text())
 	}
 }
 

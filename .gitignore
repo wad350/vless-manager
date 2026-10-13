@@ -13,15 +13,13 @@ xray_src/.git.upstream/
 /vless-manager
 /vless-manager-*
 
-# Obsolete experimental source tree; the build uses xray_src.
-singbox_src/
-singbox_extended/
-
 # Runtime state and credentials
 /data/
 config.json
 subscriptions.json
 device-id
+device-hwid
+device-hwid.tmp
 *.log
 *.pid
 *.before-xray

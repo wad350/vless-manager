@@ -804,6 +804,86 @@ func TestPrioritizedSelectionChoosesFastestServerInFirstWorkingSubscription(t *t
 	}
 }
 
+func TestConfiguredSelectionUnsortedResults(t *testing.T) {
+	tests := []struct {
+		name      string
+		results   []PingResult
+		excludeID string
+		wantID    string
+	}{
+		{name: "minimum", results: []PingResult{{ServerID: "slow", LatencyMS: 80}, {ServerID: "fast", LatencyMS: 5}, {ServerID: "middle", LatencyMS: 20}}, wantID: "fast"},
+		{name: "zero latency", results: []PingResult{{ServerID: "slow", LatencyMS: 5}, {ServerID: "zero", LatencyMS: 0}}, wantID: "zero"},
+		{name: "invalid excluded", results: []PingResult{{ServerID: "offline", LatencyMS: -1}, {ServerID: "incompat", LatencyMS: 0, Incompat: true}, {ServerID: "slow", LatencyMS: 30}, {ServerID: "fast", LatencyMS: 10}}, wantID: "fast"},
+		{name: "all invalid", results: []PingResult{{ServerID: "offline", LatencyMS: -1}, {ServerID: "incompat", LatencyMS: 2, Incompat: true}}},
+		{name: "first equal minimum", results: []PingResult{{ServerID: "slow", LatencyMS: 40}, {ServerID: "first", LatencyMS: 10}, {ServerID: "second", LatencyMS: 10}}, wantID: "first"},
+		{
+			name: "equal minimum among many results",
+			results: []PingResult{
+				{ServerID: "0", LatencyMS: 0, Incompat: true},
+				{ServerID: "1", LatencyMS: 9},
+				{ServerID: "first", LatencyMS: 0},
+				{ServerID: "3", LatencyMS: 2, Incompat: true},
+				{ServerID: "4", LatencyMS: 2},
+				{ServerID: "5", LatencyMS: 3},
+				{ServerID: "6", LatencyMS: 2},
+				{ServerID: "second", LatencyMS: 0},
+				{ServerID: "8", LatencyMS: 3, Incompat: true},
+				{ServerID: "9", LatencyMS: 5},
+				{ServerID: "10", LatencyMS: 5},
+				{ServerID: "11", LatencyMS: 9},
+				{ServerID: "12", LatencyMS: 8},
+			},
+			wantID: "first",
+		},
+		{name: "excluded server", results: []PingResult{{ServerID: "excluded", LatencyMS: 0}, {ServerID: "slow", LatencyMS: 20}, {ServerID: "fast", LatencyMS: 10}}, excludeID: "excluded", wantID: "fast"},
+	}
+	for _, mode := range []string{"priority", "fastest"} {
+		for _, test := range tests {
+			t.Run(mode+"/"+test.name, func(t *testing.T) {
+				tmp := t.TempDir()
+				cfg := defaultConfig()
+				cfg.Settings.PingSelectionMode = mode
+				servers := make([]VLESSServer, len(test.results))
+				for i, result := range test.results {
+					servers[i] = VLESSServer{ID: result.ServerID}
+				}
+				api := newAPIServer(
+					NewProcessManager(tmp), cfg,
+					[]*Subscription{{ID: "sub", Servers: servers}},
+					filepath.Join(tmp, "config.json"), filepath.Join(tmp, "subscriptions.json"),
+				)
+				calls := 0
+				api.pingRunner = func(candidates []VLESSServer) []PingResult {
+					calls++
+					var results []PingResult
+					for _, candidate := range candidates {
+						if test.excludeID != "" && candidate.ID == test.excludeID {
+							t.Fatal("excluded server reached the ping runner")
+						}
+						for _, result := range test.results {
+							if result.ServerID == candidate.ID {
+								results = append(results, result)
+							}
+						}
+					}
+					return results
+				}
+				server, result := api.findBestConfigured(test.excludeID, false, false)
+				if test.wantID == "" {
+					if server != nil || result != nil {
+						t.Fatalf("selected server=%+v result=%+v, want nil", server, result)
+					}
+				} else if server == nil || result == nil || server.ID != test.wantID || result.ServerID != test.wantID {
+					t.Fatalf("selected server=%+v result=%+v, want %s", server, result, test.wantID)
+				}
+				if calls != 1 {
+					t.Fatalf("ping calls=%d, want 1", calls)
+				}
+			})
+		}
+	}
+}
+
 func TestCancelledPrioritizedSelectionDoesNotContinueToNextSubscription(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := defaultConfig()

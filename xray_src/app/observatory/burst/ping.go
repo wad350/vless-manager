@@ -69,13 +69,13 @@ func (s *pingClient) MeasureDelay(httpMethod string) (time.Duration, error) {
 	if err != nil {
 		return rttFailed, err
 	}
+	defer resp.Body.Close()
 	if httpMethod == http.MethodGet {
 		_, err = io.Copy(io.Discard, resp.Body)
 		if err != nil {
 			return rttFailed, err
 		}
 	}
-	resp.Body.Close()
 
 	return time.Since(start), nil
 }

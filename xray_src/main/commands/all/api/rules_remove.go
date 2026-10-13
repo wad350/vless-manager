@@ -42,9 +42,6 @@ func executeRemoveRules(cmd *base.Command, args []string) {
 
 	client := routerService.NewRoutingServiceClient(conn)
 
-	if len(ruleTags) == 0 {
-		base.Fatalf("no valid ruleTag input")
-	}
 	for _, tag := range ruleTags {
 
 		rr := &routerService.RemoveRuleRequest{

@@ -75,12 +75,15 @@ jobs:
         run: |
           VLESS_MANAGER_RELEASE_DIR="$PWD/dist" VLESS_MANAGER_RELEASE_VERSION="$VERSION" \
             go test -count=1 -run '^TestBuiltReleasePackages$' ./cmd/vless-manager
-          if [[ -f "docs/releases/$GITHUB_REF_NAME.md" ]]; then
-            notes=(--notes-file "docs/releases/$GITHUB_REF_NAME.md")
-          else
-            notes=(--generate-notes)
+          awk -v version="$GITHUB_REF_NAME" '
+            /^## / { if (active) exit; active = ($0 == "## " version); next }
+            active { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/release-notes.md"; then
+            echo "Missing changelog for $GITHUB_REF_NAME" >&2
+            exit 1
           fi
           gh release create "$GITHUB_REF_NAME" dist/* \
             --verify-tag \
-            "${notes[@]}" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             --title "VLESS Manager $GITHUB_REF_NAME"

@@ -1,5 +1,5 @@
 # ── Project metadata ──────────────────────────────────────────────────────────
-VERSION      := 1.17.5
+VERSION      := 1.18.0
 ARCH         ?= aarch64-3.10
 BUILD_DATE   := $(shell date -u +%Y-%m-%d)
 

@@ -2,7 +2,6 @@ package tun
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -85,14 +84,8 @@ func (t *stackGVisor) Start() error {
 			options.SetReuseAddress(true)
 			options.SetReusePort(true)
 
-			var conn net.Conn
-			if os.Getenv("VLESS_MANAGER_TUN_TCP_BATCH") == "1" {
-				conn = newGVisorTCPConn(&wq, ep)
-			} else {
-				conn = gonet.NewTCPConn(&wq, ep)
-			}
 			t.handler.HandleConnection(
-				conn,
+				gonet.NewTCPConn(&wq, ep),
 				// local address on the gVisor side is connection destination
 				net.TCPDestination(net.IPAddress(id.LocalAddress.AsSlice()), net.Port(id.LocalPort)),
 			)
@@ -108,7 +101,10 @@ func (t *stackGVisor) Start() error {
 	// Use custom UDP packet handler, instead of strict gVisor forwarder, for FullCone NAT support
 	udpForwarder := newUdpConnectionHandler(t.handler.HandleConnection, t.writeRawUDPPacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, func(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
-		data := copyUDPPayload(pkt)
+		data := pkt.Data().AsRange().ToSlice()
+		// if len(data) == 0 {
+		// 	return false
+		// }
 		// source/destination of the packet we process as incoming, on gVisor side are Remote/Local
 		// in other terms, src is the side behind tun, dst is the side behind gVisor
 		// this function handle packets passing from the tun to the gVisor, therefore the src/dst assignement
@@ -194,12 +190,6 @@ func (t *stackGVisor) writeRawUDPPacket(payload []byte, src net.Destination, dst
 	return nil
 }
 
-func copyUDPPayload(pkt *stack.PacketBuffer) []byte {
-	// The queue outlives this callback. ToSlice already returns an owned copy;
-	// cloning first adds a ref-counted packet that must otherwise be released.
-	return pkt.Data().AsRange().ToSlice()
-}
-
 // Close is called by Handler to shut down the stack
 func (t *stackGVisor) Close() error {
 	if t.stack == nil {
@@ -216,14 +206,6 @@ func (t *stackGVisor) Close() error {
 
 // createStack configure gVisor ip stack
 func createStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
-	bufferLimit := 0
-	if os.Getenv("VLESS_MANAGER_TUN_TCP_BUFFER") == "128k" {
-		bufferLimit = 128 << 10
-	}
-	return createStackWithBufferLimit(ep, bufferLimit)
-}
-
-func createStackWithBufferLimit(ep stack.LinkEndpoint, bufferLimit int) (*stack.Stack, error) {
 	opts := stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
@@ -266,10 +248,6 @@ func createStackWithBufferLimit(ep stack.LinkEndpoint, bufferLimit int) (*stack.
 		Default: tcpRXBufDefSize,
 		Max:     tcpRXBufMaxSize,
 	}
-	if bufferLimit > 0 {
-		tcpRXBufOpt.Default = bufferLimit
-		tcpRXBufOpt.Max = 4 * bufferLimit
-	}
 	err = gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRXBufOpt)
 	if err != nil {
 		return nil, errors.New(err.String())
@@ -279,10 +257,6 @@ func createStackWithBufferLimit(ep stack.LinkEndpoint, bufferLimit int) (*stack.
 		Min:     tcpTXBufMinSize,
 		Default: tcpTXBufDefSize,
 		Max:     tcpTXBufMaxSize,
-	}
-	if bufferLimit > 0 {
-		tcpTXBufOpt.Default = bufferLimit
-		tcpTXBufOpt.Max = 4 * bufferLimit
 	}
 	err = gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTXBufOpt)
 	if err != nil {

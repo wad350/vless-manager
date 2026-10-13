@@ -2,7 +2,6 @@ package inbound
 
 import (
 	"context"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -185,8 +184,6 @@ type udpConn struct {
 	cancel           context.CancelFunc
 }
 
-var yieldUDPOverflow = os.Getenv("XRAY_UDP_YIELD_OVERFLOW") == "on"
-
 func (c *udpConn) updateActivity() {
 	c.lastActivityTime.Store(int32(time.Now().Unix()))
 }
@@ -293,11 +290,7 @@ func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 		return conn, true
 	}
 
-	options := []pipe.Option{pipe.DiscardOverflow(), pipe.WithSizeLimit(16 * 1024), pipe.OnDiscard(protocoludp.RecordPipeDrop)}
-	if yieldUDPOverflow {
-		options = append(options, pipe.YieldOverflow())
-	}
-	pReader, pWriter := pipe.New(options...)
+	pReader, pWriter := pipe.New(pipe.DiscardOverflow(), pipe.WithSizeLimit(16*1024), pipe.OnDiscard(protocoludp.RecordPipeDrop))
 	ctx, cancel := context.WithCancel(w.ctx)
 	conn := &udpConn{
 		reader: pReader,

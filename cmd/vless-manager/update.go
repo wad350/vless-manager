@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,10 @@ const (
 	updateAutoCheckInterval = time.Hour
 	updateInitialCheckDelay = 15 * time.Second
 	maxUpdateBytes          = 64 << 20
+	updateHistoryTimeout    = time.Minute
+	maxHistoryPageBytes     = 2 << 20
+	maxHistoryBytes         = 8 << 20
+	maxHistoryPages         = 32
 )
 
 var versionPattern = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)$`)
@@ -59,11 +64,36 @@ type UpdateStatus struct {
 }
 
 type githubRelease struct {
-	TagName    string        `json:"tag_name"`
-	HTMLURL    string        `json:"html_url"`
-	Draft      bool          `json:"draft"`
-	Prerelease bool          `json:"prerelease"`
-	Assets     []githubAsset `json:"assets"`
+	TagName     string        `json:"tag_name"`
+	HTMLURL     string        `json:"html_url"`
+	Name        string        `json:"name"`
+	Body        string        `json:"body"`
+	PublishedAt *time.Time    `json:"published_at"`
+	Draft       bool          `json:"draft"`
+	Prerelease  bool          `json:"prerelease"`
+	Assets      []githubAsset `json:"assets"`
+}
+
+type UpdateHistoryRelease struct {
+	Tag         string     `json:"tag"`
+	Version     string     `json:"version,omitempty"`
+	Name        string     `json:"name,omitempty"`
+	Body        string     `json:"body,omitempty"`
+	ReleaseURL  string     `json:"release_url,omitempty"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	Prerelease  bool       `json:"prerelease"`
+}
+
+type UpdateHistoryStatus struct {
+	CurrentVersion string                 `json:"current_version"`
+	LatestVersion  string                 `json:"latest_version,omitempty"`
+	Repository     string                 `json:"repository"`
+	Releases       []UpdateHistoryRelease `json:"releases"`
+	Complete       bool                   `json:"complete"`
+	Busy           bool                   `json:"busy"`
+	CheckedAt      *time.Time             `json:"checked_at,omitempty"`
+	Transport      string                 `json:"transport,omitempty"`
+	Error          string                 `json:"error,omitempty"`
 }
 
 type githubAsset struct {
@@ -81,10 +111,11 @@ type releaseAsset struct {
 type appUpdater struct {
 	api *apiServer
 
-	mu     sync.Mutex
-	busy   bool
-	status UpdateStatus
-	path   string
+	mu      sync.Mutex
+	busy    bool
+	status  UpdateStatus
+	path    string
+	history UpdateHistoryStatus
 }
 
 func newAppUpdater(api *apiServer) *appUpdater {
@@ -106,6 +137,211 @@ func (u *appUpdater) snapshot() UpdateStatus {
 	status := u.status
 	status.CurrentVersion = Version
 	return status
+}
+
+// History GET is a local snapshot. Only an explicit refresh downloads GitHub
+// pages; a failure never publishes a partial list over a complete cache.
+func (u *appUpdater) historySnapshot() UpdateHistoryStatus {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.historySnapshotLocked()
+}
+
+func (u *appUpdater) historySnapshotLocked() UpdateHistoryStatus {
+	status := u.history
+	status.CurrentVersion = Version
+	status.LatestVersion = u.status.LatestVersion
+	status.Repository = UpdateRepository
+	status.Releases = append([]UpdateHistoryRelease{}, status.Releases...)
+	return status
+}
+
+func (u *appUpdater) finishHistory(releases []UpdateHistoryRelease, transport string, fetchErr error) UpdateHistoryStatus {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.history.Busy = false
+	if fetchErr != nil {
+		u.history.Error = fetchErr.Error()
+	} else {
+		now := time.Now()
+		u.history = UpdateHistoryStatus{
+			Releases: releases, Complete: true, CheckedAt: &now, Transport: transport,
+		}
+	}
+	return u.historySnapshotLocked()
+}
+
+func (u *appUpdater) refreshHistory(ctx context.Context) (UpdateHistoryStatus, error) {
+	u.mu.Lock()
+	if u.history.Busy {
+		status := u.historySnapshotLocked()
+		u.mu.Unlock()
+		return status, errors.New("история релизов уже загружается")
+	}
+	u.history.Busy = true
+	u.history.Error = ""
+	u.mu.Unlock()
+	var releases []UpdateHistoryRelease
+	var transport string
+	err := u.api.operations.Run(ctx, operationRequest{
+		Kind: "app-update-history", Title: "История релизов", Source: "manual",
+		Cancellable: true, StallLimit: 45 * time.Second,
+	}, func(runCtx context.Context, report func(operationProgress)) error {
+		fetchCtx, cancel := context.WithTimeout(runCtx, updateHistoryTimeout)
+		defer cancel()
+		var fetchErr error
+		transport, fetchErr = u.withPreferredTransport(fetchCtx, updateCheckTimeout, func(client *http.Client) error {
+			var err error
+			releases, err = fetchReleaseHistory(fetchCtx, client, githubReleasesAPIURL(), func(page int) {
+				report(operationProgress{Done: page, Message: fmt.Sprintf("Получена страница %d истории GitHub", page)})
+			})
+			return err
+		})
+		return fetchErr
+	})
+	return u.finishHistory(releases, transport, err), err
+}
+
+func githubReleasesAPIURL() string {
+	return "https://api.github.com/repos/" + UpdateRepository + "/releases"
+}
+
+func historyReleaseURL(value string) string {
+	parsed, err := url.Parse(value)
+	prefix := "/" + strings.ToLower(UpdateRepository) + "/releases/tag/"
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil ||
+		!strings.HasPrefix(strings.ToLower(parsed.Path), prefix) || len(parsed.Path) <= len(prefix) {
+		return ""
+	}
+	return parsed.String()
+}
+
+// GitHub /releases supports per_page=100 and Link rel="next". We always
+// request the canonical endpoint, so a Link header cannot redirect a fetch.
+// Hitting any bound is an error, never a successful truncated history.
+func fetchReleaseHistory(ctx context.Context, client *http.Client, endpoint string, onPage func(int)) ([]UpdateHistoryRelease, error) {
+	base, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	var releases []UpdateHistoryRelease
+	seen := make(map[string]bool)
+	totalBytes := 0
+	for page := 1; page <= maxHistoryPages; page++ {
+		pageURL := *base
+		query := pageURL.Query()
+		query.Set("per_page", "100")
+		query.Set("page", strconv.Itoa(page))
+		pageURL.RawQuery = query.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", "vless-manager/"+Version)
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("история GitHub, страница %d: %w", page, err)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHistoryPageBytes+1))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("история GitHub, страница %d: HTTP %d", page, resp.StatusCode)
+		}
+		totalBytes += len(data)
+		if readErr != nil || len(data) > maxHistoryPageBytes || totalBytes > maxHistoryBytes {
+			return nil, fmt.Errorf("история GitHub, страница %d: превышен лимит ответа или ошибка чтения", page)
+		}
+		var batch []githubRelease
+		if err := json.Unmarshal(data, &batch); err != nil || batch == nil || len(batch) > 100 {
+			return nil, fmt.Errorf("история GitHub, страница %d: некорректный список релизов", page)
+		}
+		for _, release := range batch {
+			if release.Draft || release.TagName == "" || seen[release.TagName] {
+				continue
+			}
+			seen[release.TagName] = true
+			version, _ := normalizedVersion(release.TagName)
+			if _, err := versionParts(version); err != nil {
+				version = ""
+			}
+			releases = append(releases, UpdateHistoryRelease{
+				Tag: release.TagName, Version: version, Name: release.Name, Body: release.Body,
+				ReleaseURL: historyReleaseURL(release.HTMLURL), PublishedAt: release.PublishedAt,
+				Prerelease: release.Prerelease,
+			})
+		}
+		if onPage != nil {
+			onPage(page)
+		}
+		hasNext, err := historyNextPage(resp.Header.Get("Link"), base, page)
+		if err != nil {
+			return nil, err
+		}
+		// A full response without Link is ambiguous: probe the next page rather
+		// than silently treating the first hundred releases as the whole history.
+		if !hasNext && (resp.Header.Get("Link") != "" || len(batch) < 100) {
+			sort.SliceStable(releases, func(i, j int) bool {
+				a, b := releases[i], releases[j]
+				aStable, bStable := a.Version != "" && !a.Prerelease, b.Version != "" && !b.Prerelease
+				if aStable != bStable {
+					return aStable
+				}
+				if aStable && a.Version != b.Version {
+					newer, _ := newerVersion(a.Version, b.Version)
+					return newer
+				}
+				if a.PublishedAt != nil && b.PublishedAt != nil {
+					return a.PublishedAt.After(*b.PublishedAt)
+				}
+				return a.PublishedAt != nil && b.PublishedAt == nil
+			})
+			return releases, nil
+		}
+	}
+	return nil, fmt.Errorf("история GitHub содержит больше %d страниц; полный список не загружен", maxHistoryPages)
+}
+
+func historyNextPage(header string, base *url.URL, page int) (bool, error) {
+	if len(header) > 8192 {
+		return false, errors.New("слишком длинный Link истории GitHub")
+	}
+	hasNext := false
+	for _, link := range strings.Split(header, ",") {
+		if strings.TrimSpace(link) == "" {
+			continue
+		}
+		parts := strings.Split(link, ";")
+		if !strings.HasPrefix(strings.TrimSpace(parts[0]), "<") || !strings.HasSuffix(strings.TrimSpace(parts[0]), ">") {
+			return false, errors.New("некорректный Link истории GitHub")
+		}
+		hasRelation := false
+		for _, parameter := range parts[1:] {
+			key, value, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+			if !ok || key != "rel" {
+				continue
+			}
+			hasRelation = true
+			nextRelation := false
+			for _, relation := range strings.Fields(strings.Trim(value, "\"")) {
+				nextRelation = nextRelation || relation == "next"
+			}
+			if !nextRelation {
+				continue
+			}
+			next, err := url.Parse(strings.Trim(strings.TrimSpace(parts[0]), "<>"))
+			if hasNext || err != nil || next.Scheme != base.Scheme || next.Host != base.Host || next.User != nil ||
+				next.Query().Get("page") != strconv.Itoa(page+1) || next.Query().Get("per_page") != "100" {
+				return false, errors.New("некорректная пагинация истории GitHub; полный список не загружен")
+			}
+			hasNext = true
+		}
+		if !hasRelation {
+			return false, errors.New("некорректный Link истории GitHub")
+		}
+	}
+	return hasNext, nil
 }
 
 func (u *appUpdater) begin(state string) bool {
@@ -1043,6 +1279,22 @@ func (s *apiServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.updater.snapshot())
+}
+
+func (s *apiServer) handleUpdateHistory(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.updater.historySnapshot())
+	case http.MethodPost:
+		status, err := s.updater.refreshHistory(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, status)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "GET or POST only")
+	}
 }
 
 func (s *apiServer) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {

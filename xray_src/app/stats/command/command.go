@@ -120,17 +120,24 @@ func (s *statsServer) GetUsersStats(ctx context.Context, request *GetUsersStatsR
 			suffixDownlink = ">>>traffic>>>downlink"
 		)
 		s.stats.VisitCounters(func(name string, c feature_stats.Counter) bool {
-			var email string
+			if !strings.HasPrefix(name, prefixUser) {
+				return true
+			}
+			var suffix string
 			var isUplink bool
 
 			if strings.HasSuffix(name, suffixUplink) {
-				email = name[len(prefixUser) : len(name)-len(suffixUplink)]
+				suffix = suffixUplink
 				isUplink = true
 			} else if strings.HasSuffix(name, suffixDownlink) {
-				email = name[len(prefixUser) : len(name)-len(suffixDownlink)]
+				suffix = suffixDownlink
 			} else {
 				return true
 			}
+			if len(name) <= len(prefixUser)+len(suffix) {
+				return true
+			}
+			email := name[len(prefixUser) : len(name)-len(suffix)]
 
 			u, ok := userMap[email]
 			if !ok {

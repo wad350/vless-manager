@@ -72,67 +72,6 @@ func (c *countingConn) Written() int64 {
 	return c.written.Load()
 }
 
-type recordedPacketWrite struct {
-	payload []byte
-	addr    net.Addr
-}
-
-type scriptedPacketConn struct {
-	local    *net.UDPAddr
-	writes   chan recordedPacketWrite
-	reads    chan recordedPacketWrite
-	closed   atomic.Bool
-	deadline atomic.Int64
-}
-
-func newScriptedPacketConn() *scriptedPacketConn {
-	return &scriptedPacketConn{
-		local:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 40000},
-		writes: make(chan recordedPacketWrite, 8),
-		reads:  make(chan recordedPacketWrite, 8),
-	}
-}
-
-func (c *scriptedPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	item, ok := <-c.reads
-	if !ok {
-		return 0, nil, io.EOF
-	}
-	copy(p, item.payload)
-	return len(item.payload), item.addr, nil
-}
-
-func (c *scriptedPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	c.writes <- recordedPacketWrite{
-		payload: append([]byte(nil), p...),
-		addr:    addr,
-	}
-	return len(p), nil
-}
-
-func (c *scriptedPacketConn) Close() error {
-	if c.closed.CompareAndSwap(false, true) {
-		close(c.reads)
-	}
-	return nil
-}
-
-func (c *scriptedPacketConn) LocalAddr() net.Addr { return c.local }
-func (c *scriptedPacketConn) SetDeadline(t time.Time) error {
-	c.deadline.Store(t.UnixNano())
-	return nil
-}
-
-func (c *scriptedPacketConn) SetReadDeadline(t time.Time) error {
-	c.deadline.Store(t.UnixNano())
-	return nil
-}
-
-func (c *scriptedPacketConn) SetWriteDeadline(t time.Time) error {
-	c.deadline.Store(t.UnixNano())
-	return nil
-}
-
 func newStandaloneEchoUDPConfig() *custom.UDPStandaloneConfig {
 	return &custom.UDPStandaloneConfig{
 		Client: []*custom.UDPItem{

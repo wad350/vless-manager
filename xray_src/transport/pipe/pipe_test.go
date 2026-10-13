@@ -200,37 +200,6 @@ func TestPipeOverflowObserver(t *testing.T) {
 	}
 }
 
-func TestPipeYieldOverflowStillDiscardsWithoutConsumer(t *testing.T) {
-	var dropped atomic.Int32
-	reader, writer := New(WithSizeLimit(0), DiscardOverflow(), YieldOverflow(), OnDiscard(func(n int) { dropped.Add(int32(n)) }))
-	defer reader.Interrupt()
-	first := buf.New()
-	first.WriteString("kept")
-	common.Must(writer.WriteMultiBuffer(buf.MultiBuffer{first}))
-	complete := make(chan struct{})
-	go func() {
-		defer close(complete)
-		for range 100 {
-			packet := buf.New()
-			packet.WriteString("full")
-			writer.WriteMultiBuffer(buf.MultiBuffer{packet})
-		}
-	}()
-	select {
-	case <-complete:
-	case <-time.After(time.Second):
-		t.Fatal("overflow blocked on the consumer")
-	}
-	if dropped.Load() != 100 {
-		t.Fatalf("dropped = %d, want 100", dropped.Load())
-	}
-	mb, err := reader.ReadMultiBuffer()
-	defer buf.ReleaseMulti(mb)
-	if err != nil || mb.String() != "kept" {
-		t.Fatal("overflow changed queued data")
-	}
-}
-
 func BenchmarkPipeReadWrite(b *testing.B) {
 	reader, writer := New(WithoutSizeLimit())
 	a := buf.New()

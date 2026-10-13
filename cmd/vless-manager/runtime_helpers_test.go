@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -81,6 +83,38 @@ func TestHealthMonitorAndWaitForWANWithDeterministicProbe(t *testing.T) {
 	wanProbeCall = func(string, time.Duration) (bool, error) { return false, errors.New("offline") }
 	if WaitForWAN(time.Millisecond) {
 		t.Fatal("WaitForWAN unexpectedly succeeded")
+	}
+}
+
+func TestFastestReachableMinimum(t *testing.T) {
+	tests := []struct {
+		name    string
+		results []PingResult
+		want    int
+	}{
+		{name: "empty", want: -1},
+		{name: "unsorted", results: []PingResult{{LatencyMS: 80}, {LatencyMS: 5}, {LatencyMS: 20}}, want: 1},
+		{name: "zero latency", results: []PingResult{{LatencyMS: 5}, {LatencyMS: 0}}, want: 1},
+		{name: "skip invalid", results: []PingResult{{LatencyMS: -1}, {LatencyMS: 0, Incompat: true}, {LatencyMS: 30}, {LatencyMS: 10}}, want: 3},
+		{name: "all invalid", results: []PingResult{{LatencyMS: -1}, {LatencyMS: 2, Incompat: true}, {LatencyMS: -20}}, want: -1},
+		{name: "first equal minimum", results: []PingResult{{LatencyMS: 40}, {LatencyMS: 10}, {LatencyMS: 10}}, want: 1},
+		{name: "ordered equal minimum", results: []PingResult{{LatencyMS: 10}, {LatencyMS: 10}, {LatencyMS: 40}}, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := append([]PingResult(nil), test.results...)
+			best := fastestReachable(test.results)
+			if test.want < 0 {
+				if best != nil {
+					t.Fatalf("best=%+v, want nil", best)
+				}
+			} else if best != &test.results[test.want] {
+				t.Fatalf("best=%+v, want original result at index %d", best, test.want)
+			}
+			if !slices.Equal(test.results, before) {
+				t.Fatal("selection reordered or changed input results")
+			}
+		})
 	}
 }
 
@@ -294,4 +328,108 @@ func TestCancelledPingBatchDoesNotStartProbes(t *testing.T) {
 	if len(results) != 1 || results[0].LatencyMS != -1 {
 		t.Fatalf("cancelled batch results = %#v", results)
 	}
+}
+
+// Runtime utility helpers below are compiled only into manager tests.
+
+func (r *ringBuffer) write(line string) {
+	r.logEvent(serviceLogInfo, "xray", "runtime", line)
+}
+
+func (r *ringBuffer) Lines(since int) ([]string, int) {
+	entries, seq := r.Entries(since)
+	if len(entries) == 0 {
+		return nil, seq
+	}
+	lines := make([]string, len(entries))
+	for i, entry := range entries {
+		lines[i] = formatServiceLogEntry(entry)
+	}
+	return lines, seq
+}
+
+// waitForPort polls addr until it's listening or deadline passes.
+// Kept for potential future use (e.g. in integration tests).
+func waitForPort(addr string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
+			c.Close()
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+func pipeLog(rb *ringBuffer, r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		rb.write(scanner.Text())
+	}
+}
+
+// Used returns total bytes transferred (upload+download).
+func (u *SubUserInfo) Used() int64 { return u.Upload + u.Download }
+
+func fetchSubscription(url string) (*Subscription, error) {
+	return fetchSubscriptionWithTimeout(url, 15*time.Second)
+}
+
+// fetchSubscriptionWithTimeout is the explicit-timeout test wrapper.
+// fetchSubscription keeps the 15 s default for its optional integration test.
+func fetchSubscriptionWithTimeout(url string, timeout time.Duration) (*Subscription, error) {
+	return fetchSubscriptionWithClientContext(context.Background(), url, subscriptionHTTPClient(timeout, nil))
+}
+
+func fetchSubscriptionWithClient(url string, client *http.Client) (*Subscription, error) {
+	return fetchSubscriptionWithClientContext(context.Background(), url, client)
+}
+
+// pingViaSOCKS performs HTTP GET → testURL through a SOCKS5 proxy.
+// testURL may be blank — defaultPingTestURL is used in that case.
+func pingViaSOCKS(srv *VLESSServer, socksPort int, timeout time.Duration, testURL string) PingResult {
+	return pingViaSOCKSContext(context.Background(), srv, socksPort, timeout, testURL)
+}
+
+// pingTCPFallback measures raw TCP connectivity for local test fixtures.
+func pingTCPFallback(srv *VLESSServer, timeout time.Duration) PingResult {
+	res := PingResult{
+		ServerID:   srv.ID,
+		ServerName: srv.Name,
+		Address:    srv.Address,
+		Port:       srv.Port,
+		Protocol:   describeProtocol(srv),
+		LatencyMS:  -1,
+		CheckedAt:  time.Now(),
+	}
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", srv.Address, srv.Port), timeout)
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	conn.Close()
+	res.LatencyMS = time.Since(start).Milliseconds()
+	return res
+}
+
+func fetchBypassWhitelist(client *http.Client) ([]string, error) {
+	return fetchBypassWhitelistContext(context.Background(), client)
+}
+
+func fetchBypassWhitelistContext(ctx context.Context, client *http.Client) ([]string, error) {
+	return fetchBypassDomainSource(ctx, client, bypassWhitelistURL)
+}
+
+func speedTestDownloadURL(endpoint string, size int64) string {
+	return speedTestRequestURL(endpoint, "bytes", size, 1, false)
+}
+
+func requireRouteCommand(stage, name string, args ...string) error {
+	output, err := run(name, args...)
+	if err != nil {
+		return fmt.Errorf("%s: %s %v: %w (%s)", stage, name, args, err, output)
+	}
+	return nil
 }

@@ -7,14 +7,14 @@ import (
 	"github.com/xtls/xray-core/common"
 )
 
-// NewAesDecryptionStream creates a new AES encryption stream based on given key and IV.
-// Caller must ensure the length of key and IV is either 16, 24 or 32 bytes.
+// NewAesDecryptionStream creates an AES-CFB decryption stream based on the given key and IV.
+// The key must be 16, 24 or 32 bytes, and the IV must be 16 bytes.
 func NewAesDecryptionStream(key []byte, iv []byte) cipher.Stream {
 	return NewAesStreamMethod(key, iv, cipher.NewCFBDecrypter)
 }
 
-// NewAesEncryptionStream creates a new AES description stream based on given key and IV.
-// Caller must ensure the length of key and IV is either 16, 24 or 32 bytes.
+// NewAesEncryptionStream creates an AES-CFB encryption stream based on the given key and IV.
+// The key must be 16, 24 or 32 bytes, and the IV must be 16 bytes.
 func NewAesEncryptionStream(key []byte, iv []byte) cipher.Stream {
 	return NewAesStreamMethod(key, iv, cipher.NewCFBEncrypter)
 }
