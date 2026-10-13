@@ -74,6 +74,9 @@ type speedTestConfig struct {
 	UploadUnit    int64
 	CacheBust     bool
 	PhaseLimit    time.Duration
+	workerClients []*http.Client
+	sampleEnd     time.Time
+	uploadAck     *atomic.Int64
 }
 
 type speedTestStartRequest struct {
@@ -224,18 +227,7 @@ func (s *speedTestService) execute(provider string) {
 			return clientErr
 		}
 		defer client.CloseIdleConnections()
-		config, prepareErr := prepareSpeedTestConfigWithClient(ctx, provider, client)
-		if prepareErr != nil {
-			return prepareErr
-		}
-		s.update(func(status *speedTestStatus) {
-			status.Server = config.Server
-			status.Message = "Проверяем задержку"
-		})
-		result, runErr := s.run(ctx, config, func(progress speedTestStatus) {
-			s.recordProgress(progress)
-			report(operationProgress{Done: progress.Progress, Total: 100, Message: progress.Message})
-		})
+		result, runErr := s.runWithServerSelection(ctx, provider, client, report)
 		if runErr != nil {
 			return runErr
 		}
@@ -272,6 +264,65 @@ func (s *speedTestService) execute(provider string) {
 	}
 }
 
+func (s *speedTestService) runWithServerSelection(ctx context.Context, provider string, client *http.Client, report func(operationProgress)) (speedTestResult, error) {
+	excluded := make(map[string]bool)
+	const attempts = 3
+	for attempt := 0; attempt < attempts; attempt++ {
+		var cfg speedTestConfig
+		var err error
+		if provider == speedTestProviderSpeedtestRU {
+			cfg, err = prepareSpeedTestRUConfigExcluding(ctx, speedTestRUAPIBase, client, excluded)
+		} else {
+			cfg, err = prepareSpeedTestConfigWithClient(ctx, provider, client)
+		}
+		var result speedTestResult
+		hasData := false
+		if err == nil {
+			s.update(func(status *speedTestStatus) {
+				status.Server = cfg.Server
+				status.Message = "Проверяем задержку"
+			})
+			result, err = s.run(ctx, cfg, func(progress speedTestStatus) {
+				hasData = hasData || progress.DownloadBytes > 0 || progress.UploadBytes > 0
+				s.recordProgress(progress)
+				report(operationProgress{Done: progress.Progress, Total: 100, Message: progress.Message})
+			})
+		}
+		if err == nil {
+			return result, nil
+		}
+		// Retry connection preparation only before payload transfer begins.
+		// Never replace a failed in-progress sample with an unrelated result.
+		if attempt+1 == attempts || ctx.Err() != nil || !s.api.pm.TunnelRunning() || hasData ||
+			result.DownloadBytes > 0 || result.UploadBytes > 0 || !speedTestRetryableError(err) {
+			return result, err
+		}
+		message := "Повторяем подключение к Cloudflare"
+		if provider == speedTestProviderSpeedtestRU {
+			message = "Выбираем другой сервер Speedtest.ru"
+			if parsed, parseErr := url.Parse(cfg.LatencyURL); parseErr == nil && parsed.Host != "" {
+				excluded[(&url.URL{Scheme: parsed.Scheme, Host: parsed.Host}).String()] = true
+			}
+		}
+		client.CloseIdleConnections()
+		s.api.pm.event(serviceLogWarn, "speedtest", "setup.retry", "подготовка теста повторяется после сетевой ошибки",
+			field("provider", provider), field("attempt", attempt+1), field("error", err))
+		report(operationProgress{Total: 100, Message: message})
+		s.update(func(status *speedTestStatus) {
+			status.Phase = "prepare"
+			status.Message = message
+			status.Progress = 0
+		})
+	}
+	return speedTestResult{}, errors.New("не удалось выбрать сервер теста скорости")
+}
+
+func speedTestRetryableError(err error) bool {
+	var networkError net.Error
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		(errors.As(err, &networkError) && networkError.Timeout())
+}
+
 func validSpeedTestProvider(provider string) bool {
 	return provider == speedTestProviderCloudflare || provider == speedTestProviderSpeedtestRU
 }
@@ -305,12 +356,14 @@ func defaultSpeedTestConfig() speedTestConfig {
 
 func newSpeedTestHTTPClient(workers int) *http.Client {
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		MaxIdleConns:          workers,
-		MaxIdleConnsPerHost:   workers,
-		MaxConnsPerHost:       workers,
-		IdleConnTimeout:       15 * time.Second,
+		Proxy:               http.ProxyFromEnvironment,
+		DialContext:         (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:        max(workers, 8),
+		MaxIdleConnsPerHost: workers,
+		MaxConnsPerHost:     workers,
+		// Pools belong to one test and are closed when it ends. Keep an early
+		// finishing worker's socket until the next phase, even if others lag.
+		IdleConnTimeout:       0,
 		TLSHandshakeTimeout:   8 * time.Second,
 		ResponseHeaderTimeout: 8 * time.Second,
 		DisableCompression:    true,
@@ -330,6 +383,21 @@ func (pm *ProcessManager) tunnelSpeedTestClient(workers int) (*http.Client, erro
 	transport := client.Transport.(*http.Transport)
 	transport.Proxy = nil
 	transport.DialContext = engine.DialContext
+	transport.DialTLSContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		var attempts atomic.Int32
+		dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+			if attempts.Add(1) == 2 {
+				pm.event(serviceLogDebug, "speedtest", "tls.spare_started", "начато резервное TLS-подключение", field("target", address))
+			}
+			return engine.DialContext(ctx, network, address)
+		}
+		conn, err := dialSpeedTestTLS(ctx, network, address, dial,
+			transport.TLSClientConfig, transport.TLSHandshakeTimeout, 1500*time.Millisecond)
+		if attempts.Load() > 1 && err == nil {
+			pm.event(serviceLogDebug, "speedtest", "tls.connected", "TLS-подключение установлено", field("target", address), field("dial_attempts", attempts.Load()))
+		}
+		return conn, err
+	}
 	return client, nil
 }
 
@@ -386,6 +454,10 @@ func prepareSpeedTestConfigWithClient(ctx context.Context, provider string, clie
 }
 
 func prepareSpeedTestRUConfig(ctx context.Context, apiBase string, client *http.Client) (speedTestConfig, error) {
+	return prepareSpeedTestRUConfigExcluding(ctx, apiBase, client, nil)
+}
+
+func prepareSpeedTestRUConfigExcluding(ctx context.Context, apiBase string, client *http.Client, excluded map[string]bool) (speedTestConfig, error) {
 	var nearest speedTestRUNearestResponse
 	if err := speedTestRUAPIRequest(ctx, client, http.MethodGet, apiBase+"/api/nearest_servers", &nearest); err != nil {
 		return speedTestConfig{}, fmt.Errorf("Speedtest.ru: список серверов: %w", err)
@@ -404,7 +476,7 @@ func prepareSpeedTestRUConfig(ctx context.Context, apiBase string, client *http.
 	candidates := make([]speedTestRUServer, 0, min(6, len(nearest.Data)))
 	for _, item := range nearest.Data {
 		baseURL, err := speedTestRUBaseURL(item.Source, item.Port)
-		if err != nil {
+		if err != nil || excluded[baseURL] {
 			continue
 		}
 		candidates = append(candidates, speedTestRUServer{BaseURL: baseURL, Name: item.Name, City: item.City, Owner: item.Owner})
@@ -413,7 +485,7 @@ func prepareSpeedTestRUConfig(ctx context.Context, apiBase string, client *http.
 		}
 	}
 	if len(candidates) == 0 {
-		return speedTestConfig{}, errors.New("Speedtest.ru вернул некорректные адреса серверов")
+		return speedTestConfig{}, errors.New("Speedtest.ru не вернул других подходящих серверов")
 	}
 	headers := make(http.Header)
 	headers.Set("jwt", token.Token)
@@ -535,26 +607,32 @@ func runTunnelSpeedTest(ctx context.Context, cfg speedTestConfig, progress func(
 	}
 	result := speedTestResult{LatencyMS: latency, JitterMS: jitter}
 	progress(speedTestStatus{Phase: "latency", Message: "Задержка измерена", Progress: 10, LatencyMS: latency, JitterMS: jitter})
+	clients, closeClients, err := prepareSpeedTestWorkers(ctx, cfg, cfg.Workers)
+	if err != nil {
+		return result, fmt.Errorf("подготовка соединений: %w", err)
+	}
+	defer closeClients()
+	cfg.workerClients = clients
 
 	downloaded, elapsed, err := runSpeedTestPhase(ctx, cfg, http.MethodGet, cfg.DownloadURL, cfg.DownloadSize, cfg.Workers,
 		func(done int64) {
-			progress(speedTestStatus{Phase: "download", Message: "Измеряем скачивание", Progress: 10 + int(done*55/cfg.DownloadSize), LatencyMS: latency, JitterMS: jitter, DownloadBytes: done})
+			progress(speedTestStatus{Phase: "download", Message: "Измеряем скачивание", Progress: min(65, 10+int(done*55/cfg.DownloadSize)), LatencyMS: latency, JitterMS: jitter, DownloadBytes: done})
 		})
+	result.DownloadBytes = downloaded
 	if err != nil {
 		return result, fmt.Errorf("скачивание: %w", err)
 	}
-	result.DownloadBytes = downloaded
 	result.DownloadMbps = megabitsPerSecond(downloaded, elapsed)
 	progress(speedTestStatus{Phase: "download", Message: "Скачивание измерено", Progress: 65, LatencyMS: latency, JitterMS: jitter, DownloadMbps: result.DownloadMbps, DownloadBytes: downloaded})
 
 	uploaded, elapsed, err := runSpeedTestPhase(ctx, cfg, http.MethodPost, cfg.UploadURL, cfg.UploadSize, cfg.Workers,
 		func(done int64) {
-			progress(speedTestStatus{Phase: "upload", Message: "Измеряем отправку", Progress: 65 + int(done*35/cfg.UploadSize), LatencyMS: latency, JitterMS: jitter, DownloadMbps: result.DownloadMbps, DownloadBytes: downloaded, UploadBytes: done})
+			progress(speedTestStatus{Phase: "upload", Message: "Измеряем отправку", Progress: min(100, 65+int(done*35/cfg.UploadSize)), LatencyMS: latency, JitterMS: jitter, DownloadMbps: result.DownloadMbps, DownloadBytes: downloaded, UploadBytes: done})
 		})
+	result.UploadBytes = uploaded
 	if err != nil {
 		return result, fmt.Errorf("отправка: %w", err)
 	}
-	result.UploadBytes = uploaded
 	result.UploadMbps = megabitsPerSecond(uploaded, elapsed)
 	return result, nil
 }
@@ -601,17 +679,37 @@ func measureSpeedTestLatency(ctx context.Context, cfg speedTestConfig) (float64,
 }
 
 func runSpeedTestPhase(ctx context.Context, cfg speedTestConfig, method, endpoint string, totalBytes int64, workers int, progress func(int64)) (int64, time.Duration, error) {
+	clients := cfg.workerClients
+	if len(clients) != workers {
+		var closeClients func()
+		var err error
+		clients, closeClients, err = prepareSpeedTestWorkers(ctx, cfg, workers)
+		if err != nil {
+			return 0, 0, fmt.Errorf("подготовка соединений: %w", err)
+		}
+		defer closeClients()
+	}
 	phaseLimit := cfg.PhaseLimit
 	if phaseLimit <= 0 {
 		phaseLimit = 25 * time.Second
 	}
-	phaseCtx, cancel := context.WithTimeout(ctx, phaseLimit)
+	started := time.Now()
+	requestLimit := phaseLimit
+	if cfg.DownloadParam != "" {
+		// Stop starting requests at the sampling boundary, then drain the last
+		// small response. Aborting a large response closes its TLS connection
+		// and forces the upload to handshake again on an already busy tunnel.
+		cfg.sampleEnd = started.Add(phaseLimit)
+		requestLimit += 8 * time.Second
+	}
+	phaseCtx, cancel := context.WithTimeout(ctx, requestLimit)
 	defer cancel()
 	var transferred atomic.Int64
+	var uploadAck atomic.Int64
+	cfg.uploadAck = &uploadAck
 	var firstErr error
 	var errMu sync.Mutex
 	var wg sync.WaitGroup
-	started := time.Now()
 
 	base := totalBytes / int64(workers)
 	remainder := totalBytes % int64(workers)
@@ -621,9 +719,18 @@ func runSpeedTestPhase(ctx context.Context, cfg speedTestConfig, method, endpoin
 			size++
 		}
 		wg.Add(1)
+		workerConfig := cfg
+		workerConfig.Client = clients[i]
 		go func() {
 			defer wg.Done()
-			if err := transferSpeedTestWorker(phaseCtx, cfg, method, endpoint, size, &transferred); err != nil {
+			if err := transferSpeedTestWorker(phaseCtx, workerConfig, method, endpoint, size, &transferred); err != nil {
+				// Closing a TLS-backed pipe at our sampling deadline may surface as
+				// EOF instead of a context error. Do not turn that into a failed test,
+				// but retain EOFs received before the deadline as genuine failures.
+				if phaseCtx.Err() != nil && (errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
+					errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed)) {
+					err = phaseCtx.Err()
+				}
 				errMu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -644,6 +751,7 @@ func runSpeedTestPhase(ctx context.Context, cfg speedTestConfig, method, endpoin
 			return bytes, elapsed, err
 		}
 		if errors.Is(phaseCtx.Err(), context.DeadlineExceeded) && bytes >= min(int64(1<<20), totalBytes) &&
+			(method != http.MethodPost || uploadAck.Load() > 0) &&
 			(firstErr == nil || errors.Is(firstErr, context.Canceled) || errors.Is(firstErr, context.DeadlineExceeded)) {
 			return bytes, elapsed, nil
 		}
@@ -669,13 +777,73 @@ func runSpeedTestPhase(ctx context.Context, cfg speedTestConfig, method, endpoin
 	}
 }
 
+func prepareSpeedTestWorkers(ctx context.Context, cfg speedTestConfig, workers int) ([]*http.Client, func(), error) {
+	clients := make([]*http.Client, workers)
+	transport, cloneable := cfg.Client.Transport.(*http.Transport)
+	if !cloneable || cfg.LatencyURL == "" {
+		for i := range clients {
+			clients[i] = cfg.Client
+		}
+		return clients, func() {}, nil
+	}
+	closeClients := func() {
+		for _, client := range clients {
+			client.CloseIdleConnections()
+		}
+	}
+	for i := range clients {
+		if i == 0 {
+			clients[i] = cfg.Client
+			continue
+		}
+		client := *cfg.Client
+		workerTransport := transport.Clone()
+		workerTransport.MaxConnsPerHost = 1
+		workerTransport.MaxIdleConnsPerHost = 1
+		workerTransport.MaxIdleConns = 1
+		client.Transport = workerTransport
+		clients[i] = &client
+	}
+	// Reserve one connection per worker before bulk transfer. Keep the latency
+	// connection for worker zero, and reuse this pool for both directions.
+	for _, client := range clients {
+		err := func() error {
+			warmCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(warmCtx, http.MethodGet,
+				speedTestRequestURL(cfg.LatencyURL, cfg.LatencyParam, 0, 1, cfg.CacheBust), nil)
+			if err != nil {
+				return err
+			}
+			applySpeedTestHeaders(req, cfg.Headers)
+			resp, err := client.Do(req)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(io.Discard, resp.Body)
+			closeErr := resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				err = fmt.Errorf("HTTP %d", resp.StatusCode)
+			} else if err == nil {
+				err = closeErr
+			}
+			return err
+		}()
+		if err != nil {
+			closeClients()
+			return nil, func() {}, err
+		}
+	}
+	return clients, closeClients, nil
+}
+
 func transferSpeedTestWorker(ctx context.Context, cfg speedTestConfig, method, endpoint string, size int64, transferred *atomic.Int64) error {
 	if method == http.MethodPost {
 		uploadChunkSize := int64(1 << 20)
-		if cfg.UploadParam == "" {
-			uploadChunkSize = size
-		}
 		for remaining := size; remaining > 0; {
+			if !cfg.sampleEnd.IsZero() && !time.Now().Before(cfg.sampleEnd) {
+				return nil
+			}
 			chunk := min(remaining, uploadChunkSize)
 			var err error
 			for attempt := 0; attempt < 4; attempt++ {
@@ -701,7 +869,22 @@ func transferSpeedTestWorker(ctx context.Context, cfg speedTestConfig, method, e
 		}
 		return nil
 	}
-	return transferSpeedTestRequest(ctx, cfg, method, endpoint, size, transferred)
+	chunkSize := size
+	if cfg.DownloadParam != "" {
+		unit := max(int64(1), cfg.DownloadUnit)
+		chunkSize = max(unit, (1<<20)/unit*unit)
+	}
+	for remaining := size; remaining > 0; {
+		if !cfg.sampleEnd.IsZero() && !time.Now().Before(cfg.sampleEnd) {
+			return nil
+		}
+		chunk := min(remaining, chunkSize)
+		if err := transferSpeedTestRequest(ctx, cfg, method, endpoint, chunk, transferred); err != nil {
+			return err
+		}
+		remaining -= chunk
+	}
+	return nil
 }
 
 func transferSpeedTestRequest(ctx context.Context, cfg speedTestConfig, method, endpoint string, size int64, transferred *atomic.Int64) error {
@@ -721,24 +904,26 @@ func transferSpeedTestRequest(ctx context.Context, cfg speedTestConfig, method, 
 		applySpeedTestHeaders(req, cfg.Headers)
 		req.ContentLength = size
 		req.Header.Set("Content-Type", "application/octet-stream")
-		requestBytes := &atomic.Int64{}
-		req.Body = io.NopCloser(&countingReader{reader: body, count: requestBytes})
+		req.Body = io.NopCloser(&countingReader{reader: body, count: transferred})
 		resp, err := cfg.Client.Do(req)
 		if err != nil {
 			return err
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			_, _ = io.CopyN(io.Discard, resp.Body, 64<<10)
 			return fmt.Errorf("HTTP %d", resp.StatusCode)
 		}
 		if _, err = io.Copy(io.Discard, resp.Body); err != nil {
 			return err
 		}
-		transferred.Add(requestBytes.Load())
+		if cfg.uploadAck != nil {
+			cfg.uploadAck.Add(size)
+		}
 		return nil
 	}
 	applySpeedTestHeaders(req, cfg.Headers)
-	resp, err := cfg.Client.Do(req)
+	resp, err := doSpeedTestDownloadRequest(cfg.Client, req)
 	if err != nil {
 		return err
 	}
@@ -748,6 +933,18 @@ func transferSpeedTestRequest(ctx context.Context, cfg speedTestConfig, method, 
 	}
 	_, err = io.CopyBuffer(&countingWriter{count: transferred}, resp.Body, make([]byte, 128<<10))
 	return err
+}
+
+func doSpeedTestDownloadRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	resp, err := client.Do(req)
+	// An unanswered GET has transferred no measured payload and is safe to
+	// repeat on a fresh connection. Keep the same phase deadline and byte
+	// counter; never replay a partially read body or change the test server.
+	if err == nil || req.Context().Err() != nil || !speedTestRetryableError(err) {
+		return resp, err
+	}
+	client.CloseIdleConnections()
+	return client.Do(req.Clone(req.Context()))
 }
 
 type zeroReader struct{}

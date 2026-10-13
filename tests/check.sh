@@ -27,3 +27,4 @@ sh -n install.sh
 sh -n packaging/build_ipk.sh
 sh -n packaging/init.d/S99vless-manager
 sh tests/install_test.sh
+sh tests/check_large_downloads_test.sh

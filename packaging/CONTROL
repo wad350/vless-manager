@@ -1,5 +1,5 @@
 Package: vless-manager
-Version: 1.17.3
+Version: 1.17.5
 Architecture: mipsel-3.4
 Maintainer: local
 Description: VLESS proxy manager with WebUI for Keenetic routers. Embeds Xray v26.10.10 with local fixes and native TPROXY routing for LAN and router TCP/UDP traffic.
