@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -69,6 +70,40 @@ func TestPolyAssemblyIsCurrent(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestPolyMACCEncoding(t *testing.T) {
+	var generated strings.Builder
+	writePolyMACC(&generated)
+	code := generated.String()
+	if strings.Count(code, "\tWORD ") != 20 || strings.Count(code, "MOVW R24, LO") != 8 || strings.Count(code, "MOVW R0, HI") != 8 {
+		t.Fatal("MACC convolution must accumulate eight columns and twenty products")
+	}
+	for _, want := range []string{"WORD $0x70700001 // MADDU R3, R16", "WORD $0x70f30001 // MADDU R7, R19"} {
+		if !strings.Contains(code, want) {
+			t.Fatalf("incorrect unsigned multiply-accumulate encoding: missing %s", want)
+		}
+	}
+	products := make(map[[2]uint64]bool)
+	for _, line := range strings.Split(code, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "WORD" {
+			continue
+		}
+		opcode, err := strconv.ParseUint(strings.TrimPrefix(fields[1], "$"), 0, 32)
+		if err != nil || opcode&0xfc00ffff != 0x70000001 {
+			t.Fatalf("not an unsigned multiply-accumulate: %s", line)
+		}
+		h, r := (opcode>>21)&31, (opcode>>16)&31
+		pair := [2]uint64{h, r}
+		if h < 3 || h > 7 || r < 16 || r > 19 || products[pair] {
+			t.Fatalf("invalid or duplicate product: %s", line)
+		}
+		products[pair] = true
+	}
+	if len(products) != 20 {
+		t.Fatal("MACC convolution omitted a product")
 	}
 }
 

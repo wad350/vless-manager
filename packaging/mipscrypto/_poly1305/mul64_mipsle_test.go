@@ -14,6 +14,17 @@ import (
 	"unsafe"
 )
 
+func updateMACCMIPS(state *macState, msg []byte) {
+	for len(msg) >= TagSize {
+		n := min(len(msg)&^(TagSize-1), 16*1024)
+		polyBlocksMACCMIPS(state, &msg[0], uint32(n/TagSize))
+		msg = msg[n:]
+	}
+	if len(msg) != 0 {
+		updateGenericGo(state, msg)
+	}
+}
+
 func TestMIPSPolyBackend(t *testing.T) {
 	for _, tc := range []struct {
 		info string
@@ -32,9 +43,13 @@ func TestMIPSPolyBackend(t *testing.T) {
 		}
 	}
 	info, err := os.ReadFile("/proc/cpuinfo")
-	want := err == nil && supportsMIPSPoly1305(string(info)) && os.Getenv("VLESS_MANAGER_MIPS_POLY1305") == "auto" && os.Getenv("VLESS_MANAGER_MIPS_CHACHA20") != "generic"
+	mode := os.Getenv("VLESS_MANAGER_MIPS_POLY1305")
+	want := err == nil && supportsMIPSPoly1305(string(info)) && (mode == "auto" || mode == "macc") && os.Getenv("VLESS_MANAGER_MIPS_CHACHA20") != "generic"
 	if useMIPSPoly1305 != want {
 		t.Fatalf("backend = %v, want %v", useMIPSPoly1305, want)
+	}
+	if useMIPSMACC != (want && mode == "macc") {
+		t.Fatal("MACC backend selection does not match the explicit opt-in")
 	}
 	t.Setenv("VLESS_MANAGER_MIPS_POLY1305", "generic")
 	if detectMIPSPoly1305() {
@@ -104,6 +119,11 @@ func TestMIPSUpdate(t *testing.T) {
 				if got != want {
 					t.Fatalf("trial=%d length=%d alignment=%d: got %+v, want %+v", trial, n, alignment, got, want)
 				}
+				candidate := initial
+				updateMACCMIPS(&candidate, msg)
+				if candidate != want {
+					t.Fatalf("MACC trial=%d length=%d alignment=%d: got %+v, want %+v", trial, n, alignment, candidate, want)
+				}
 			}
 		}
 	}
@@ -119,17 +139,20 @@ func TestMIPSBlocksStateAndCarries(t *testing.T) {
 			for _, word := range []byte{0, 1, 0x55, 0xaa, 0xff} {
 				state := macState{h: [3]uint64{^uint64(0), ^uint64(0), high}, r: [2]uint64{keyWord & rMask0, keyWord & rMask1}}
 				want := state
+				candidate := state
 				msg := make([]byte, 32768)
 				for i := range msg {
 					msg[i] = word
 				}
 				polyBlocksMIPS(&state, nil, 0)
-				if state != want {
+				polyBlocksMACCMIPS(&candidate, nil, 0)
+				if state != want || candidate != want {
 					t.Fatal("zero blocks changed state")
 				}
 				updateMIPS(&state, msg)
+				updateMACCMIPS(&candidate, msg)
 				updateGenericGo(&want, msg)
-				if state != want {
+				if state != want || candidate != want {
 					t.Fatalf("maximal carries: r=%x high=%d message=%x: got %+v want %+v", keyWord, high, word, state, want)
 				}
 			}
@@ -159,9 +182,11 @@ func TestMIPSBlocksPageBoundary(t *testing.T) {
 			var got macState
 			initialize(&key, &got)
 			want := got
+			candidate := got
 			updateMIPS(&got, msg)
+			updateMACCMIPS(&candidate, msg)
 			updateGenericGo(&want, msg)
-			if got != want {
+			if got != want || candidate != want {
 				t.Fatalf("page boundary length=%d", n)
 			}
 		}
@@ -181,9 +206,11 @@ func TestMIPSRandomStatesAndStreamingTags(t *testing.T) {
 		initialize(&key, &got)
 		got.h = [3]uint64{rng.Uint64(), rng.Uint64(), uint64(trial % 6)}
 		want := got
+		candidate := got
 		updateMIPS(&got, msg)
+		updateMACCMIPS(&candidate, msg)
 		updateGenericGo(&want, msg)
-		if got != want {
+		if got != want || candidate != want {
 			t.Fatalf("random state trial=%d length=%d alignment=%d", trial, n, alignment)
 		}
 	}
@@ -239,6 +266,36 @@ func TestMIPSMultiplyConcurrent(t *testing.T) {
 	workers.Wait()
 }
 
+func TestMIPSMACCConcurrent(t *testing.T) {
+	var workers sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		workers.Add(1)
+		go func(seed int64) {
+			defer workers.Done()
+			rng := rand.New(rand.NewSource(seed))
+			var key [32]byte
+			for trial := 0; trial < 128; trial++ {
+				rng.Read(key[:])
+				msg := make([]byte, 1+rng.Intn(32769))
+				rng.Read(msg)
+				var got macState
+				initialize(&key, &got)
+				want := got
+				updateMACCMIPS(&got, msg)
+				updateGenericGo(&want, msg)
+				if got != want {
+					t.Errorf("concurrent MACC mismatch: worker=%d trial=%d", seed, trial)
+					return
+				}
+				if trial%16 == 0 {
+					runtime.GC()
+				}
+			}
+		}(int64(worker + 1))
+	}
+	workers.Wait()
+}
+
 func TestMIPSChainedAuthentication(t *testing.T) {
 	var key [32]byte
 	var input [25]byte
@@ -271,7 +328,7 @@ var mipsPolySink macState
 
 func BenchmarkMIPSPoly1305(b *testing.B) {
 	for _, n := range []int{16, 64, 1200, 16384} {
-		for _, implementation := range []string{"assembly", "products", "generic"} {
+		for _, implementation := range []string{"assembly", "macc", "products", "generic"} {
 			b.Run(fmt.Sprintf("%d/%s", n, implementation), func(b *testing.B) {
 				var key [32]byte
 				rand.New(rand.NewSource(1308)).Read(key[:])
@@ -285,6 +342,8 @@ func BenchmarkMIPSPoly1305(b *testing.B) {
 				for i := 0; i < b.N; i++ {
 					if implementation == "assembly" {
 						updateMIPS(&state, msg)
+					} else if implementation == "macc" {
+						updateMACCMIPS(&state, msg)
 					} else if implementation == "products" {
 						updateProductsMIPS(&state, msg)
 					} else {

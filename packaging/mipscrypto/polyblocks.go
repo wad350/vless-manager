@@ -17,38 +17,49 @@ func polyBlocksAssemblySource() string {
 // R8..R15 = product, R16..R19 = clamped r. Remaining registers are scratch.
 // No calls, floating point, secret branches or R22/R23/R26/R27/R30 registers.
 // Caller bounds each call to 16 KiB and supplies only complete blocks.
-TEXT ·polyBlocksMIPS(SB), NOSPLIT, $-4-12
+`)
+	writePolyBlocks(&out, "polyBlocksMIPS", false)
+	writePolyBlocks(&out, "polyBlocksMACCMIPS", true)
+	return out.String()
+}
+
+func writePolyBlocks(out *strings.Builder, name string, macc bool) {
+	fmt.Fprintf(out, "\nTEXT ·%s(SB), NOSPLIT, $-4-12\n", name)
+	out.WriteString(`
 	MOVW state+0(FP), R20
 	MOVW msg+4(FP), R1
 	MOVW blocks+8(FP), R2
 	BEQ R2, done
 `)
 	for i := 0; i < 5; i++ {
-		fmt.Fprintf(&out, "\tMOVW %d(R20), R%d\n", i*4, 3+i)
+		fmt.Fprintf(out, "\tMOVW %d(R20), R%d\n", i*4, 3+i)
 	}
 	for i := 0; i < 4; i++ {
-		fmt.Fprintf(&out, "\tMOVW %d(R20), R%d\n", 24+i*4, 16+i)
+		fmt.Fprintf(out, "\tMOVW %d(R20), R%d\n", 24+i*4, 16+i)
 	}
 	out.WriteString("blocks:\n\tMOVW R0, R24\n")
 	for i := 0; i < 4; i++ {
-		fmt.Fprintf(&out, "\tMOVWL %d(R1), R20\n\tMOVWR %d(R1), R20\n", i*4+3, i*4)
-		polyAddCarry(&out, 3+i, 20)
+		fmt.Fprintf(out, "\tMOVWL %d(R1), R20\n\tMOVWR %d(R1), R20\n", i*4+3, i*4)
+		polyAddCarry(out, 3+i, 20)
 	}
 	out.WriteString("\tADDU R24, R7\n\tADDU $1, R7\n")
-	// Four schoolbook rows. The high h limb is <= 7 and each r limb < 2^28,
-	// so the last product plus row carry fits a single word.
-	for j := 0; j < 4; j++ {
-		for i := 0; i < 4; i++ {
-			fmt.Fprintf(&out, "\tMULU R%d, R%d\n\tMOVW LO, R20\n\tMOVW HI, R21\n", 16+j, 3+i)
-			if j != 0 {
-				fmt.Fprintf(&out, "\tADDU R%d, R20\n\tSGTU R%d, R20, R25\n\tADDU R25, R21\n", 8+i+j, 8+i+j)
+	if macc {
+		writePolyMACC(out)
+	} else {
+		// Each r limb is clamped below 2^28; h's high limb is at most seven.
+		for j := 0; j < 4; j++ {
+			for i := 0; i < 4; i++ {
+				fmt.Fprintf(out, "\tMULU R%d, R%d\n\tMOVW LO, R20\n\tMOVW HI, R21\n", 16+j, 3+i)
+				if j != 0 {
+					fmt.Fprintf(out, "\tADDU R%d, R20\n\tSGTU R%d, R20, R25\n\tADDU R25, R21\n", 8+i+j, 8+i+j)
+				}
+				if i != 0 {
+					out.WriteString("\tADDU R24, R20\n\tSGTU R24, R20, R25\n\tADDU R25, R21\n")
+				}
+				fmt.Fprintf(out, "\tMOVW R20, R%d\n\tMOVW R21, R24\n", 8+i+j)
 			}
-			if i != 0 {
-				out.WriteString("\tADDU R24, R20\n\tSGTU R24, R20, R25\n\tADDU R25, R21\n")
-			}
-			fmt.Fprintf(&out, "\tMOVW R20, R%d\n\tMOVW R21, R24\n", 8+i+j)
+			fmt.Fprintf(out, "\tMULU R%d, R7\n\tMOVW LO, R20\n\tADDU R24, R20\n\tMOVW R20, R%d\n", 16+j, 12+j)
 		}
-		fmt.Fprintf(&out, "\tMULU R%d, R7\n\tMOVW LO, R20\n\tADDU R24, R20\n\tMOVW R20, R%d\n", 16+j, 12+j)
 	}
 	out.WriteString(`	MOVW R8, R3
 	MOVW R9, R4
@@ -59,26 +70,44 @@ TEXT ·polyBlocksMIPS(SB), NOSPLIT, $-4-12
 	MOVW R0, R24
 `)
 	for i := 0; i < 4; i++ {
-		polyAddCarry(&out, 3+i, 12+i)
+		polyAddCarry(out, 3+i, 12+i)
 	}
 	out.WriteString("\tADDU R24, R7\n")
 	// Add (cc >> 2) after cc, matching upstream's c*4 + c reduction.
 	for i := 0; i < 4; i++ {
-		fmt.Fprintf(&out, "\tSRL $2, R%d\n", 12+i)
+		fmt.Fprintf(out, "\tSRL $2, R%d\n", 12+i)
 		if i < 3 {
-			fmt.Fprintf(&out, "\tSLL $30, R%d, R20\n\tOR R20, R%d\n", 13+i, 12+i)
+			fmt.Fprintf(out, "\tSLL $30, R%d, R20\n\tOR R20, R%d\n", 13+i, 12+i)
 		}
 	}
 	out.WriteString("\tMOVW R0, R24\n")
 	for i := 0; i < 4; i++ {
-		polyAddCarry(&out, 3+i, 12+i)
+		polyAddCarry(out, 3+i, 12+i)
 	}
 	out.WriteString("\tADDU R24, R7\n\tADDU $16, R1\n\tSUBU $1, R2\n\tBNE R2, blocks\n\tMOVW state+0(FP), R20\n")
 	for i := 0; i < 5; i++ {
-		fmt.Fprintf(&out, "\tMOVW R%d, %d(R20)\n", 3+i, i*4)
+		fmt.Fprintf(out, "\tMOVW R%d, %d(R20)\n", 3+i, i*4)
 	}
 	out.WriteString("\tMOVW R0, 20(R20)\ndone:\n\tRET\n")
-	return out.String()
+}
+
+func writePolyMACC(out *strings.Builder) {
+	// A column has at most four products of a 32-bit h and a <2^28 r.
+	// Including the carry, its sum is <2^62, so HI:LO cannot overflow.
+	// MADDU encoding follows LLVM MipsInstrInfo.td: MULT_FM<0x1c, 1>.
+	// Go has no unsigned MADD mnemonic; WORD also fences its scheduler.
+	out.WriteString("\tMOVW R0, R24\n")
+	for column := 0; column < 8; column++ {
+		out.WriteString("\tMOVW R24, LO\n\tMOVW R0, HI\n")
+		for h := 0; h < 5; h++ {
+			r := column - h
+			if r >= 0 && r < 4 {
+				opcode := uint32(0x70000001 | (3+h)<<21 | (16+r)<<16)
+				fmt.Fprintf(out, "\tWORD $0x%08x // MADDU R%d, R%d\n", opcode, 3+h, 16+r)
+			}
+		}
+		fmt.Fprintf(out, "\tMOVW LO, R%d\n\tMOVW HI, R24\n", 8+column)
+	}
 }
 
 // Add a word and incoming R24 carry, producing the next carry in R24.

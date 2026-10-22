@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,9 +62,28 @@ func TestTempUDPConnCloseAfterSetTimeout(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// The timer callback also closes its connections; retain that lifecycle.
-	if packet.closes == 0 || control.closes == 0 {
-		t.Fatalf("connections not closed: packet=%d control=%d", packet.closes, control.closes)
+	if packet.closes != 1 || control.closes != 1 {
+		t.Fatalf("cleanup calls: packet=%d control=%d", packet.closes, control.closes)
+	}
+}
+
+func TestTempUDPConnConcurrentCloseAndTimeout(t *testing.T) {
+	packet, control := &auditPacketConn{}, &auditControlConn{}
+	c := NewTempUDPConn(packet, control, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := c.Close(); err != nil {
+				t.Errorf("close: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	c.SetTimeout(0)
+	if packet.closes != 1 || control.closes != 1 {
+		t.Fatalf("cleanup calls: packet=%d control=%d", packet.closes, control.closes)
 	}
 }
 

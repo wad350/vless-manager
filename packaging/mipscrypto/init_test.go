@@ -28,11 +28,12 @@ func TestInitCryptoDefaults(t *testing.T) {
 	}
 	prefix = strings.Replace(prefix, "export PATH=", "export PATH="+dir+":", 1)
 	for _, tc := range []struct{ name, machine, limit, override, want string }{
-		{"mt7621", "mips", "2", "", "auto/auto/2"},
+		{"mt7621", "mips", "2", "", "auto/macc/2"},
 		{"unknown_mips", "mips", "", "", "generic/unset/unset"},
 		{"arm64", "aarch64", "2", "", "unset/unset/unset"},
 		{"poly_override", "mips", "2", "VLESS_MANAGER_MIPS_POLY1305=generic\n", "auto/generic/2"},
-		{"chacha_override", "mips", "2", "VLESS_MANAGER_MIPS_CHACHA20=generic\n", "generic/auto/2"},
+		{"poly_previous_assembly", "mips", "2", "VLESS_MANAGER_MIPS_POLY1305=auto\n", "auto/auto/2"},
+		{"chacha_override", "mips", "2", "VLESS_MANAGER_MIPS_CHACHA20=generic\n", "generic/macc/2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command("sh", "-c", "unset VLESS_MANAGER_MIPS_CHACHA20 VLESS_MANAGER_MIPS_POLY1305 GOMAXPROCS\n"+tc.override+prefix+"\nprintf '%s/%s/%s' \"${VLESS_MANAGER_MIPS_CHACHA20-unset}\" \"${VLESS_MANAGER_MIPS_POLY1305-unset}\" \"${GOMAXPROCS-unset}\"")

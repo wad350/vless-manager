@@ -2,10 +2,10 @@ package socks
 
 import (
 	"context"
-	"net"
 	"sync/atomic"
 	"time"
 
+	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/signal"
 )
 
@@ -14,6 +14,9 @@ func NewTempUDPConn(udpConn net.PacketConn, tcpConn net.Conn, expectedRemote *ne
 		PacketConn:        udpConn,
 		AssociatedTCPConn: tcpConn,
 	}
+	t.Timer = signal.CancelAfterInactivity(context.Background(), func() {
+		t.Close()
+	}, net.ConnIdleTimeout)
 	t.ExpectedRemote.Store(expectedRemote)
 	return t
 }
@@ -25,6 +28,7 @@ type TempUDPConn struct {
 	AssociatedTCPConn net.Conn
 	ExpectedRemote    atomic.Pointer[net.UDPAddr]
 	Timer             *signal.ActivityTimer
+	closed            atomic.Bool
 }
 
 func (c *TempUDPConn) Read(b []byte) (n int, err error) {
@@ -60,12 +64,14 @@ func (c *TempUDPConn) RemoteAddr() net.Addr {
 }
 
 func (c *TempUDPConn) SetTimeout(d time.Duration) {
-	c.Timer = signal.CancelAfterInactivity(context.Background(), func() {
-		c.Close()
-	}, d)
+	c.Timer.SetTimeout(d)
 }
 
 func (c *TempUDPConn) Close() error {
+	// Stopping the timer invokes Close again through its timeout callback.
+	if c.closed.Swap(true) {
+		return nil
+	}
 	if c.Timer != nil {
 		c.Timer.SetTimeout(0)
 	}

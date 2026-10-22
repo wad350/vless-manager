@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/wad350/vless-manager/main/install.s
 ```
 
 Установщик проверяет архитектуру и SHA-256 последнего стабильного IPK.
-Для конкретной версии передайте `VLESS_MANAGER_VERSION=1.18.0` перед `sh`.
+Для конкретной версии передайте `VLESS_MANAGER_VERSION=1.18.1` перед `sh`.
 Готовые пакеты и история изменений: [GitHub Releases](https://github.com/wad350/vless-manager/releases).
 MIPS-пакет включает `iptables`; ARM64 использует установленный Entware `iptables`.
 
@@ -47,7 +47,7 @@ opkg install --force-reinstall /tmp/vless-manager_VERSION_ARCH.ipk
 
 ## Сборка
 
-Требуется Go 1.27.2. Менеджер, WebUI и Xray входят в один бинарник.
+Требуется Go 1.27.3. Менеджер, WebUI и Xray входят в один бинарник.
 
 ```sh
 sh tests/check.sh
@@ -59,7 +59,7 @@ make ipk ARCH=aarch64-3.10 GOARCH=arm64 GOMIPS=
 на проверенном MT7621 init задаёт `GOMAXPROCS=2`, `GOMEMLIMIT=32MiB`, `GOGC=50`.
 Явные переменные окружения имеют приоритет. Мягкий лимит Go не ограничивает RSS.
 
-Xray зафиксирован на `v26.10.10`; [локальные отличия](xray_src/PATCHES.md).
+Xray зафиксирован на `v26.10.21` (upstream pre-release); [локальные отличия](xray_src/PATCHES.md).
 Тег `vX.Y.Z`, совпадающий с `VERSION` в Makefile, запускает проверку и публикацию
 двух IPK с SHA-256. [Изменения текущего выпуска](CHANGELOG.md).
 

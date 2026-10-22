@@ -17,11 +17,11 @@ import (
 	"strings"
 )
 
-const cryptoVersion = "v0.57.0"
+const cryptoVersion = "v0.58.0"
 
 var upstreamHashes = map[string]string{
 	"chacha20/chacha_generic.go":       "34403e82b1387b4402b00ce30c1364508c333f4bdbe671321690c6ebaa8d3180",
-	"chacha20/chacha_noasm.go":         "bbdb67ceb30ef13efc54e17935f47e00744b96754e03364e606d4f1f8f9085c1",
+	"chacha20/chacha_noasm.go":         "7533b8266ccb098f4cff5649dddff8a58574411c4765712d5bb045484bd078b1",
 	"internal/poly1305/sum_generic.go": "b0094a2895d5bda42dcaaf57c0b31fc914c3b6c6aa6237aab0100a6d78346933",
 }
 

@@ -20,7 +20,7 @@ case "$(uname -m)" in
         # Their own ISA checks still fall back to Go on unsupported processors.
         if [ "$CPU_LIMIT" = "2" ]; then
             export VLESS_MANAGER_MIPS_CHACHA20="${VLESS_MANAGER_MIPS_CHACHA20:-auto}"
-            export VLESS_MANAGER_MIPS_POLY1305="${VLESS_MANAGER_MIPS_POLY1305:-auto}"
+            export VLESS_MANAGER_MIPS_POLY1305="${VLESS_MANAGER_MIPS_POLY1305:-macc}"
             # Four VPEs share two physical cores; retain the measured Go limit.
             export GOMAXPROCS="${GOMAXPROCS:-2}"
         else

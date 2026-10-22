@@ -8,9 +8,11 @@ import (
 )
 
 var useMIPSPoly1305 = detectMIPSPoly1305()
+var useMIPSMACC = useMIPSPoly1305 && os.Getenv("VLESS_MANAGER_MIPS_POLY1305") == "macc"
 
 func detectMIPSPoly1305() bool {
-	if os.Getenv("VLESS_MANAGER_MIPS_POLY1305") != "auto" || os.Getenv("VLESS_MANAGER_MIPS_CHACHA20") == "generic" {
+	mode := os.Getenv("VLESS_MANAGER_MIPS_POLY1305")
+	if (mode != "auto" && mode != "macc") || os.Getenv("VLESS_MANAGER_MIPS_CHACHA20") == "generic" {
 		return false
 	}
 	data, err := os.ReadFile("/proc/cpuinfo")
@@ -56,13 +58,20 @@ func productsMIPS(a, b, c, r, s uint64) (ar, br, cr, as, bs, cs uint128)
 //go:noescape
 func polyBlocksMIPS(state *macState, msg *byte, blocks uint32)
 
+//go:noescape
+func polyBlocksMACCMIPS(state *macState, msg *byte, blocks uint32)
+
 func updateMIPS(state *macState, msg []byte) {
 	for len(msg) >= TagSize {
 		n := len(msg) & ^(TagSize - 1)
 		if n > 16*1024 {
 			n = 16 * 1024
 		}
-		polyBlocksMIPS(state, &msg[0], uint32(n/TagSize))
+		if useMIPSMACC {
+			polyBlocksMACCMIPS(state, &msg[0], uint32(n/TagSize))
+		} else {
+			polyBlocksMIPS(state, &msg[0], uint32(n/TagSize))
+		}
 		msg = msg[n:]
 	}
 	if len(msg) != 0 {

@@ -17,7 +17,7 @@ func cacheFixture(t *testing.T) (root, upstream, out string) {
 	t.Helper()
 	root, upstream, out = t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "out")
 	for path, source := range map[string]string{
-		"go.mod":                       "module cachefixture\ngo 1.27.2\nrequire golang.org/x/crypto v0.57.0\n",
+		"go.mod":                       "module cachefixture\ngo 1.27.3\nrequire golang.org/x/crypto v0.58.0\n",
 		"go.sum":                       "fixture-sum\n",
 		"packaging/mipscrypto/main.go": "package main\n// generator input\n",
 		"packaging/mipscrypto/_overlay/overlay.go":       "package chacha20\n",
@@ -282,7 +282,7 @@ func TestRootModulesRefreshAndConcurrentWriters(t *testing.T) {
 	if err != nil || !strings.Contains(string(mod), "=> "+staged) {
 		t.Fatal("replacement missing from module file", err)
 	}
-	writeFixtureFile(t, filepath.Join(root, "go.mod"), "module updatedfixture\ngo 1.27.2\nrequire golang.org/x/crypto v0.57.0\n")
+	writeFixtureFile(t, filepath.Join(root, "go.mod"), "module updatedfixture\ngo 1.27.3\nrequire golang.org/x/crypto v0.58.0\n")
 	writeFixtureFile(t, filepath.Join(root, "go.sum"), "new-fixture-sum\n")
 	const count = 4
 	var wg sync.WaitGroup
