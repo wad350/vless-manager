@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/wad350/vless-manager/main/install.s
 ```
 
 Установщик проверяет архитектуру и SHA-256 последнего стабильного IPK.
-Для конкретной версии передайте `VLESS_MANAGER_VERSION=1.18.3` перед `sh`.
+Для конкретной версии передайте `VLESS_MANAGER_VERSION=1.18.4` перед `sh`.
 Готовые пакеты и история изменений: [GitHub Releases](https://github.com/wad350/vless-manager/releases).
 MIPS-пакет включает `iptables`; ARM64 использует установленный Entware `iptables`.
 

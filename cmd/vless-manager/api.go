@@ -58,6 +58,7 @@ type apiServer struct {
 	auth               *authService
 	operations         *operationCoordinator
 	speedTest          *speedTestService
+	trafficRead        func() (internetTraffic, error)
 	diagnosticsEnabled bool
 	profileBusy        atomic.Bool
 
@@ -85,10 +86,11 @@ type apiServer struct {
 func newAPIServerWithRuntimeDir(pm *ProcessManager, cfg *Config, subs []*Subscription, cfgPath, subPath, runtimeDir string) *apiServer {
 	s := &apiServer{
 		pm: pm, cfg: cfg, subs: subs, cfgPath: cfgPath, subPath: subPath,
-		runtimeDir: runtimeDir,
-		mux:        http.NewServeMux(),
-		pingCache:  newPingCache(filepath.Join(runtimeDir, "ping-cache.json"), filepath.Join(filepath.Dir(cfgPath), "ping-cache.json")),
-		auth:       newAuthService(newKeeneticAuthenticator("")),
+		runtimeDir:  runtimeDir,
+		mux:         http.NewServeMux(),
+		trafficRead: readInternetTraffic,
+		pingCache:   newPingCache(filepath.Join(runtimeDir, "ping-cache.json"), filepath.Join(filepath.Dir(cfgPath), "ping-cache.json")),
+		auth:        newAuthService(newKeeneticAuthenticator("")),
 	}
 	s.failover = newFailoverController(s, cfg.AutoFailover, cfg.AutoTunnelFailover)
 	s.operations = newOperationCoordinator(pm)
@@ -2096,34 +2098,28 @@ func (s *apiServer) handlePingAutoSelect(w http.ResponseWriter, r *http.Request)
 
 // --- Traffic ---
 
-// handleTraffic returns user-facing download/upload counters. The LAN bridge
-// sees client uploads as RX and client downloads as TX, so its raw kernel
-// counters must be reversed before they are shown in the UI.
+// WAN counters include both forwarded clients and router-originated traffic.
+// Outbound Xray counters measure payload, not the WAN's wire overhead.
 func (s *apiServer) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	iface := chooseLanIface()
-	rx, _ := readUint64File("/sys/class/net/" + iface + "/statistics/rx_bytes")
-	tx, _ := readUint64File("/sys/class/net/" + iface + "/statistics/tx_bytes")
-	download, upload := trafficDirections(iface, rx, tx)
+	traffic, trafficErr := s.trafficRead()
 	outbound, vpnRunning := s.pm.TrafficSnapshot()
-	routerDownload, routerUpload := s.speedTest.trafficSnapshot()
-	allDownload := addTrafficCounters(download, routerDownload)
-	allUpload := addTrafficCounters(upload, routerUpload)
 	writeJSON(w, map[string]any{
-		"interface":      iface,
-		"download_bytes": allDownload,
-		"upload_bytes":   allUpload,
-		"rx_bytes":       rx,
-		"tx_bytes":       tx,
+		"interface":      traffic.Interface,
+		"download_bytes": traffic.Download,
+		"upload_bytes":   traffic.Upload,
+		"rx_bytes":       traffic.Download,
+		"tx_bytes":       traffic.Upload,
 		"vpn_running":    vpnRunning,
 		"modes": map[string]any{
 			"all": map[string]any{
-				"download_bytes": allDownload,
-				"upload_bytes":   allUpload,
-				"available":      true,
+				"download_bytes": traffic.Download,
+				"upload_bytes":   traffic.Upload,
+				"available":      trafficErr == nil,
+				"source":         traffic.Source,
 			},
 			"vpn": map[string]any{
 				"download_bytes": outbound.VPNDownload,
@@ -2145,13 +2141,6 @@ func addTrafficCounters(base, extra uint64) uint64 {
 		return ^uint64(0)
 	}
 	return base + extra
-}
-
-func trafficDirections(iface string, rx, tx uint64) (download, upload uint64) {
-	if iface == "br0" || iface == "br-lan" {
-		return tx, rx
-	}
-	return rx, tx
 }
 
 // --- Parse URI ---

@@ -565,14 +565,14 @@ func TestSpeedTestHelpers(t *testing.T) {
 	}
 }
 
-func TestSpeedTestTrafficAccumulatesWithoutDoubleCountingProgress(t *testing.T) {
+func TestSpeedTestProgressRetainsLatestSnapshot(t *testing.T) {
 	service := newSpeedTestService(nil)
 	service.recordProgress(speedTestStatus{DownloadBytes: 10, UploadBytes: 2})
 	service.recordProgress(speedTestStatus{DownloadBytes: 25, UploadBytes: 7})
 	service.recordProgress(speedTestStatus{DownloadBytes: 25, UploadBytes: 7})
-	download, upload := service.trafficSnapshot()
-	if download != 25 || upload != 7 {
-		t.Fatalf("traffic snapshot = (%d, %d), want (25, 7)", download, upload)
+	status := service.snapshot()
+	if status.DownloadBytes != 25 || status.UploadBytes != 7 {
+		t.Fatalf("progress snapshot = %+v, want download=25 upload=7", status)
 	}
 }
 

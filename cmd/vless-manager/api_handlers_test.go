@@ -159,30 +159,11 @@ func TestAPIRejectsUnsupportedMethods(t *testing.T) {
 	}
 }
 
-func TestTrafficDirections(t *testing.T) {
-	tests := []struct {
-		name             string
-		iface            string
-		rx, tx           uint64
-		download, upload uint64
-	}{
-		{name: "Keenetic bridge", iface: "br0", rx: 100, tx: 900, download: 900, upload: 100},
-		{name: "OpenWrt bridge", iface: "br-lan", rx: 200, tx: 800, download: 800, upload: 200},
-		{name: "regular interface", iface: "tun0", rx: 700, tx: 300, download: 700, upload: 300},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			download, upload := trafficDirections(tt.iface, tt.rx, tt.tx)
-			if download != tt.download || upload != tt.upload {
-				t.Fatalf("trafficDirections(%q, %d, %d) = (%d, %d), want (%d, %d)",
-					tt.iface, tt.rx, tt.tx, download, upload, tt.download, tt.upload)
-			}
-		})
-	}
-}
-
 func TestTrafficAPIExposesSelectableModes(t *testing.T) {
 	api := newHandlerTestAPI(t)
+	api.trafficRead = func() (internetTraffic, error) {
+		return internetTraffic{Interface: "qmi_br0", Source: "wan:qmi_br0", Download: 900, Upload: 100}, nil
+	}
 	rec := apiRequest(t, api, http.MethodGet, "/api/traffic", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())

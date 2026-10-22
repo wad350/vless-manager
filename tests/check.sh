@@ -26,6 +26,7 @@ go test -race -short -count=1 -timeout=120s ./cmd/vless-manager ./packaging/mips
         ./proxy/vmess/encoding ./infra/conf ./transport/internet/finalmask
 )
 node --check cmd/vless-manager/web/app.js
+node --test tests/traffic_chart_test.mjs
 sh -n install.sh
 sh -n packaging/build_ipk.sh
 sh -n packaging/init.d/S99vless-manager

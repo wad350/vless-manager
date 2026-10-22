@@ -1236,7 +1236,7 @@ const trafficSeries = {
   bypass: { download: [], upload: [], times: [] },
 };
 let trafficMode = 'all';
-let trafficLast = null, trafficInterval;
+let trafficLast = null, trafficInterval, trafficFetching = false;
 
 document.querySelectorAll('[data-traffic-mode]').forEach((button) => {
   button.addEventListener('click', () => {
@@ -1261,21 +1261,25 @@ function startTrafficPoll() {
 }
 
 async function fetchTraffic() {
+  if (trafficFetching || document.hidden || !isStatusTabActive()) return;
+  trafficFetching = true;
   try {
     const t = await api('GET', '/traffic');
+    if (document.hidden || !isStatusTabActive()) return;
     t.modes = normalizeTrafficModes(t);
     if (trafficLast) {
       const dt = (t.timestamp - trafficLast.timestamp) / 1000;
-      if (dt > 0) {
-        for (const mode of Object.keys(trafficSeries)) {
-          updateTrafficSeries(mode, t.modes[mode], trafficLast.modes[mode], t.timestamp, dt);
-        }
+      for (const mode of Object.keys(trafficSeries)) {
+        updateTrafficSeries(mode, t.modes[mode], trafficLast.modes[mode], t.timestamp, dt);
       }
     }
     trafficLast = t;
     renderTrafficSummary(t);
     drawTrafficChart();
-  } catch (_) {}
+  } catch (_) {
+  } finally {
+    trafficFetching = false;
+  }
 }
 
 function normalizeTrafficModes(t) {
@@ -1295,7 +1299,9 @@ function updateTrafficSeries(mode, current, previous, timestamp, dt) {
   const series = trafficSeries[mode];
   const countersReset = current.download_bytes < previous.download_bytes ||
     current.upload_bytes < previous.upload_bytes;
-  if (!current.available || !previous.available || countersReset) {
+  const sourceChanged = current.source !== previous.source;
+  if (!current.available || !previous.available || countersReset || sourceChanged ||
+      dt <= 0 || dt > TRAFFIC_INTERVAL_MS * 3 / 1000) {
     series.download.length = 0;
     series.upload.length = 0;
     series.times.length = 0;
@@ -1304,9 +1310,12 @@ function updateTrafficSeries(mode, current, previous, timestamp, dt) {
   series.download.push(Math.max(0, (current.download_bytes - previous.download_bytes) / dt));
   series.upload.push(Math.max(0, (current.upload_bytes - previous.upload_bytes) / dt));
   series.times.push(timestamp);
-  if (series.download.length > TRAFFIC_HISTORY) series.download.shift();
-  if (series.upload.length > TRAFFIC_HISTORY) series.upload.shift();
-  if (series.times.length > TRAFFIC_HISTORY) series.times.shift();
+  while (series.times.length > TRAFFIC_HISTORY ||
+      timestamp - series.times[0] >= TRAFFIC_HISTORY * TRAFFIC_INTERVAL_MS) {
+    series.download.shift();
+    series.upload.shift();
+    series.times.shift();
+  }
 }
 
 function renderTrafficSummary(t) {
@@ -1316,7 +1325,7 @@ function renderTrafficSummary(t) {
   const downloadRate = series.download[series.download.length - 1] || 0;
   const uploadRate = series.upload[series.upload.length - 1] || 0;
   const labels = {
-    all: `Роутер и подключённые устройства · ${t.interface || '—'}`,
+    all: `Внешний канал · ${t.interface || '—'}`,
     vpn: t.vpn_running ? 'Трафик через VPN-туннель' : 'VPN-туннель выключен',
     bypass: t.vpn_running ? 'Трафик напрямую в обход VPN' : 'Bypass не активен без VPN',
   };
@@ -1329,7 +1338,8 @@ function renderTrafficSummary(t) {
   document.getElementById('traffic-time-end').textContent = fmtTrafficTime(series.times[series.times.length - 1]);
   const empty = document.getElementById('traffic-empty');
   empty.hidden = mode.available;
-  empty.textContent = trafficMode === 'vpn' ? 'VPN выключен' : 'Bypass не активен без VPN';
+  empty.textContent = trafficMode === 'all' ? 'Нет данных внешнего подключения' :
+    trafficMode === 'vpn' ? 'VPN выключен' : 'Bypass не активен без VPN';
 }
 
 function drawTrafficChart() {

@@ -84,12 +84,10 @@ type speedTestStartRequest struct {
 }
 
 type speedTestService struct {
-	mu              sync.Mutex
-	api             *apiServer
-	status          speedTestStatus
-	trafficDownload uint64
-	trafficUpload   uint64
-	run             func(context.Context, speedTestConfig, func(speedTestStatus)) (speedTestResult, error)
+	mu     sync.Mutex
+	api    *apiServer
+	status speedTestStatus
+	run    func(context.Context, speedTestConfig, func(speedTestStatus)) (speedTestResult, error)
 }
 
 func newSpeedTestService(api *apiServer) *speedTestService {
@@ -116,12 +114,6 @@ func (s *speedTestService) update(fn func(*speedTestStatus)) speedTestStatus {
 func (s *speedTestService) recordProgress(progress speedTestStatus) speedTestStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if progress.DownloadBytes > s.status.DownloadBytes {
-		s.trafficDownload += uint64(progress.DownloadBytes - s.status.DownloadBytes)
-	}
-	if progress.UploadBytes > s.status.UploadBytes {
-		s.trafficUpload += uint64(progress.UploadBytes - s.status.UploadBytes)
-	}
 	s.status.State = "running"
 	s.status.Phase = progress.Phase
 	s.status.Message = progress.Message
@@ -133,12 +125,6 @@ func (s *speedTestService) recordProgress(progress speedTestStatus) speedTestSta
 	s.status.DownloadBytes = progress.DownloadBytes
 	s.status.UploadBytes = progress.UploadBytes
 	return s.status
-}
-
-func (s *speedTestService) trafficSnapshot() (download, upload uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.trafficDownload, s.trafficUpload
 }
 
 func (s *apiServer) handleSpeedTest(w http.ResponseWriter, r *http.Request) {
