@@ -52,7 +52,6 @@ type apiServer struct {
 	subPath            string
 	runtimeDir         string
 	mux                *http.ServeMux
-	health             *healthMonitor
 	pingCache          *pingCache
 	failover           *failoverController
 	updater            *appUpdater
@@ -88,7 +87,6 @@ func newAPIServerWithRuntimeDir(pm *ProcessManager, cfg *Config, subs []*Subscri
 		pm: pm, cfg: cfg, subs: subs, cfgPath: cfgPath, subPath: subPath,
 		runtimeDir: runtimeDir,
 		mux:        http.NewServeMux(),
-		health:     newHealthMonitor(),
 		pingCache:  newPingCache(filepath.Join(runtimeDir, "ping-cache.json"), filepath.Join(filepath.Dir(cfgPath), "ping-cache.json")),
 		auth:       newAuthService(newKeeneticAuthenticator("")),
 	}
@@ -98,7 +96,6 @@ func newAPIServerWithRuntimeDir(pm *ProcessManager, cfg *Config, subs []*Subscri
 	s.updater = newAppUpdater(s)
 	s.connectStartFn = s.startManagedVPN
 	s.bypassFetch = s.fetchBypassSource
-	s.health.SetSettingsSource(s.settingsSnapshot)
 	s.routes()
 	return s
 }
@@ -112,8 +109,8 @@ func (s *apiServer) runtimePath(name string) string {
 }
 
 // settingsSnapshot returns a defensive copy of the currently-loaded
-// AppSettings. All long-running goroutines (failover, refresh loop, health
-// monitor) call this on every tick so a /api/settings PATCH takes effect
+// AppSettings. Long-running goroutines (failover, refresh loop) call this
+// on every tick so a /api/settings PATCH takes effect
 // without restarting the process.
 //
 // Mutex: takes RLock briefly. The returned struct value-copies slices so the
@@ -789,6 +786,12 @@ func (s *apiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if legacy, ok := patch["failover_health_url"]; ok {
+			if _, shared := patch["ping_test_url"]; !shared {
+				patch["ping_test_url"] = legacy
+			}
+			delete(patch, "failover_health_url")
+		}
 		s.mu.Lock()
 		previous := s.cfg.Settings
 		merged := s.cfg.Settings
@@ -1054,7 +1057,7 @@ func (s *apiServer) handleInternetCheck(w http.ResponseWriter, r *http.Request) 
 
 func (s *apiServer) checkInternet(trigger string) InternetStatus {
 	started := time.Now()
-	status := s.health.Check()
+	status := s.failover.CheckInternet()
 	level := serviceLogDebug
 	if !status.OK {
 		level = serviceLogWarn
@@ -1235,7 +1238,7 @@ func (s *apiServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"tun_running":              s.pm.TunnelRunning(), // Legacy API field, not a tun0 probe.
 		"route_ready":              status.RouteReady,
 		"routing_mode":             status.RoutingMode,
-		"internet":                 s.health.Status(),
+		"internet":                 failoverState.InternetStatus(),
 		"sub_user_info":            subInfo,
 		"failover":                 failoverState,
 		"ping_progress":            pingProg,

@@ -158,7 +158,7 @@ func TestFailoverProbesWhenOperatorAutomationDisabled(t *testing.T) {
 
 func TestFailoverHealthDecisions(t *testing.T) {
 	api, fc := newFailoverTestController(t)
-	api.cfg.Settings.FailoverHealthURL = "http://health.example/check"
+	api.cfg.Settings.PingTestURL = "http://health.example/check"
 	fc.statusFn = func() ProcessStatus { return ProcessStatus{} }
 	fc.healthTick()
 	if state := fc.State(); state.VPNHealthOK || state.VPNHealthFails != 0 {

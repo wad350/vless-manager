@@ -23,8 +23,6 @@ func TestSettingsDurationAccessors(t *testing.T) {
 		s.StartBackoff() != 300*time.Second ||
 		s.HealthTimeout() != 6*time.Second ||
 		s.WaitForWANTimeout() != 180*time.Second ||
-		s.InternetCheckInterval() != time.Hour ||
-		s.InternetCheckTimeout() != 5*time.Second ||
 		s.PingTimeout() != 30*time.Second ||
 		s.SubscriptionRefreshInterval() != time.Hour ||
 		s.SubscriptionFetchTimeout() != 15*time.Second ||
@@ -50,34 +48,15 @@ func TestWANProbeNetworkUsesIPv4(t *testing.T) {
 	}
 }
 
-func TestHealthMonitorAndWaitForWANWithDeterministicProbe(t *testing.T) {
+func TestWaitForWANWithDeterministicProbe(t *testing.T) {
 	oldProbe := wanProbeCall
 	defer func() { wanProbeCall = oldProbe }()
 	var calls atomic.Int32
-	wanProbeCall = func(url string, _ time.Duration) (bool, error) {
-		calls.Add(1)
-		if strings.Contains(url, "ok") {
-			return true, nil
-		}
-		return false, errors.New("offline")
-	}
-	h := newHealthMonitor()
-	settings := defaultSettings()
-	settings.OpenProbes = []string{"http://bad", "http://ok"}
-	settings.InternetCheckTimeoutSec = 1
-	h.SetSettingsSource(func() AppSettings { return settings })
-	status := h.Check()
-	if !status.OK || status.Reachable != 1 || status.Total != 2 || status.LatencyMS < 0 {
-		t.Fatalf("status=%+v", status)
-	}
-	if got := h.Status(); got.CheckedAt != status.CheckedAt {
-		t.Fatalf("stored status=%+v", got)
-	}
 	wanProbeCall = func(string, time.Duration) (bool, error) {
 		calls.Add(1)
 		return true, nil
 	}
-	if !WaitForWAN(time.Second) || calls.Load() < 3 {
+	if !WaitForWAN(time.Second) || calls.Load() != 1 {
 		t.Fatalf("WaitForWAN calls=%d", calls.Load())
 	}
 	wanProbeCall = func(string, time.Duration) (bool, error) { return false, errors.New("offline") }

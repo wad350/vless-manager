@@ -362,6 +362,31 @@ func runProbes(urls []string, timeout time.Duration) ([]ProbeResult, bool) {
 	return results, anyOK
 }
 
+// checkWAN updates the shared diagnostics. The caller holds outerMu so manual
+// and scheduled checks cannot overlap or publish results out of order.
+func (fc *failoverController) checkWAN(st AppSettings) FailoverState {
+	openR, openOK := fc.runProbesFn(st.OpenProbes, st.ProbeTimeout())
+	whR, whOK := fc.runProbesFn(st.WhitelistProbes, st.ProbeTimeout())
+	running := fc.statusFn().Running
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.state.OpenProbes = openR
+	fc.state.WhitelistProbes = whR
+	fc.state.OpenOK = openOK
+	fc.state.WhitelistOK = whOK
+	fc.state.LastCheck = time.Now()
+	fc.state.VPNOn = running
+	return fc.state
+}
+
+// CheckInternet refreshes diagnostics without changing VPN policy or its
+// hysteresis counter. Automatic decisions remain on the operator cadence.
+func (fc *failoverController) CheckInternet() InternetStatus {
+	fc.outerMu.Lock()
+	defer fc.outerMu.Unlock()
+	return fc.checkWAN(fc.api.settingsSnapshot()).InternetStatus()
+}
+
 // outerTick always probes open and whitelist sites outside the VPN. The
 // operator policy switch controls only whether the resulting decision may
 // start or stop VPN.
@@ -372,9 +397,10 @@ func (fc *failoverController) outerTick() {
 	opID := fc.api.pm.nextOperationID("outer")
 	started := time.Now()
 	st := fc.api.settingsSnapshot()
-	openR, openOK := fc.runProbesFn(st.OpenProbes, st.ProbeTimeout())
-	whR, whOK := fc.runProbesFn(st.WhitelistProbes, st.ProbeTimeout())
-	running := fc.statusFn().Running
+	state := fc.checkWAN(st)
+	openR, openOK := state.OpenProbes, state.OpenOK
+	whR, whOK := state.WhitelistProbes, state.WhitelistOK
+	running := state.VPNOn
 
 	var (
 		wantOn bool
@@ -427,13 +453,6 @@ func (fc *failoverController) outerTick() {
 	}
 
 	fc.mu.Lock()
-	fc.state.OpenProbes = openR
-	fc.state.WhitelistProbes = whR
-	fc.state.OpenOK = openOK
-	fc.state.WhitelistOK = whOK
-	fc.state.LastCheck = time.Now()
-	fc.state.VPNOn = running
-
 	// The switch may have changed while probes were in flight. Disabled
 	// policy still publishes diagnostics but never changes VPN state.
 	if !fc.enabled {
@@ -544,7 +563,7 @@ func (fc *failoverController) healthTick() {
 	}
 
 	st := fc.api.settingsSnapshot()
-	url := st.FailoverHealthURL
+	url := st.PingTestURL
 	opID := fc.api.pm.nextOperationID("health")
 	started := time.Now()
 	ok, probeErr := fc.vpnProbeFn(url, st.HealthTimeout())

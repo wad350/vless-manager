@@ -1615,8 +1615,6 @@ const SETTINGS_SCHEMA = [
         title: 'Проверка активного VPN',
         description: 'Контроль доступа в интернет через запущенный туннель.',
         items: [
-          { key: 'failover_health_url', label: 'Контрольный адрес', type: 'text',
-            hint: 'HTTP-адрес, который должен открываться через работающий VPN' },
           { key: 'failover_health_interval_sec', label: 'Проверять каждые', unit: 'сек', type: 'int', min: 10,
             hint: 'Интервал между контрольными запросами через запущенный туннель' },
           { key: 'failover_health_timeout_sec', label: 'Ждать ответа', unit: 'сек', type: 'int', min: 1,
@@ -1632,15 +1630,32 @@ const SETTINGS_SCHEMA = [
   {
     id: 'updates',
     title: 'Подписки',
-    description: 'Когда загружать новые серверы из подписок.',
+    description: 'Обновление подписок и проверка их серверов.',
     groups: [
       {
         title: 'Автоматическое обновление',
         items: [
           { key: 'subscription_refresh_hours', label: 'Период проверки обновлений подписок', unit: 'ч', type: 'int', min: 1,
             hint: 'Интервал между автоматическими загрузками включённых подписок' },
+          { key: 'subscription_first_delay_min', label: 'Первое обновление подписок', unit: 'мин', type: 'int', min: 0,
+            hint: 'Задержка после запуска сервиса перед первой автоматической загрузкой' },
+          { key: 'subscription_fetch_timeout_sec', label: 'Таймаут загрузки подписки', unit: 'сек', type: 'int', min: 3,
+            hint: 'Максимальное ожидание ответа сервера подписки' },
           { key: 'subscription_prefer_vpn', label: 'Обновлять подписки через работающий VPN-туннель', type: 'bool',
             hint: 'Если VPN выключен или не прошёл проверку, загружать подписки напрямую' },
+        ],
+      },
+      {
+        title: 'Проверка серверов',
+        items: [
+          { key: 'ping_test_url', label: 'Адрес проверки через VPN', type: 'text',
+            hint: 'Общий адрес для проверки серверов подписки и контроля активного туннеля' },
+          { key: 'ping_timeout_sec', label: 'Таймаут одного сервера', unit: 'сек', type: 'int', min: 3,
+            hint: 'Максимальное время запуска туннеля и получения HTTP-ответа от одного сервера' },
+          { key: 'ping_max_parallel', label: 'Одновременных проверок', type: 'int', min: 0,
+            hint: '0 или 1 запускает тесты последовательно; другое значение задаёт точное число одновременных проверок' },
+          { key: 'ping_startup_sleep_ms', label: 'Ожидание временного Xray', unit: 'мс', type: 'int', min: 50,
+            hint: 'Пауза после запуска тестового процесса перед первым HTTP-запросом' },
         ],
       },
     ],
@@ -1710,14 +1725,14 @@ const SETTINGS_SCHEMA = [
             hint: 'Сколько одинаковых результатов подряд требуется для включения или выключения VPN' },
           { key: 'failover_probe_timeout_sec', label: 'Таймаут прямой проверки', unit: 'сек', type: 'int', min: 1,
             hint: 'Максимальное ожидание ответа от одного контрольного адреса вне VPN' },
-          { key: 'open_probes', label: 'Адреса свободного интернета', type: 'lines', rows: 3,
-            hint: 'Если отвечает хотя бы один адрес, доступ в интернет считается неограниченным' },
-          { key: 'whitelist_probes', label: 'Адреса whitelist оператора', type: 'lines', rows: 3,
-            hint: 'Если отвечают только эти адреса, автоматика считает, что для интернета нужен VPN' },
+          { key: 'open_probes', label: 'Адреса проверки интернета без VPN', type: 'lines', rows: 3,
+            hint: 'Проверяются напрямую; ответ хотя бы одного адреса означает доступ без ограничений' },
+          { key: 'whitelist_probes', label: 'Адреса белого списка без VPN', type: 'lines', rows: 3,
+            hint: 'Проверяются напрямую; если свободный интернет недоступен, но эти адреса отвечают, нужен VPN' },
         ],
       },
       {
-        title: 'Порядок и нагрузка',
+        title: 'Сетевой движок',
         items: [
           { key: 'tls_client_profile', label: 'TLS-профиль соединения', type: 'select',
             hint: 'ChaCha20 может ускорить MIPS без аппаратного AES. Заменяет браузерный отпечаток; при проблемах выберите профиль сервера',
@@ -1725,29 +1740,13 @@ const SETTINGS_SCHEMA = [
               { value: 'server', label: 'Как в подписке (совместимый)' },
               { value: 'randomized-chacha20', label: 'ChaCha20 (слабый CPU)' },
             ] },
-          { key: 'ping_test_url', label: 'Адрес HTTP-теста', type: 'text',
-            hint: 'Этот адрес должен успешно открыться через проверяемый сервер' },
-          { key: 'ping_timeout_sec', label: 'Таймаут одного сервера', unit: 'сек', type: 'int', min: 3,
-            hint: 'Максимальное время запуска туннеля и получения HTTP-ответа от одного сервера' },
-          { key: 'ping_max_parallel', label: 'Одновременных проверок', type: 'int', min: 0,
-            hint: '0 или 1 запускает тесты последовательно; другое значение задаёт точное число одновременных проверок' },
-          { key: 'ping_startup_sleep_ms', label: 'Ожидание временного Xray', unit: 'мс', type: 'int', min: 50,
-            hint: 'Пауза после запуска тестового процесса перед первым HTTP-запросом' },
         ],
       },
       {
         title: 'Запуск и сеть',
         items: [
-          { key: 'subscription_first_delay_min', label: 'Первое обновление подписок', unit: 'мин', type: 'int', min: 0,
-            hint: 'Задержка после запуска сервиса перед первой автоматической загрузкой' },
-          { key: 'subscription_fetch_timeout_sec', label: 'Таймаут загрузки подписки', unit: 'сек', type: 'int', min: 3,
-            hint: 'Максимальное ожидание ответа сервера подписки' },
           { key: 'wait_for_wan_sec', label: 'Ожидание сети при запуске', unit: 'сек', type: 'int', min: 10,
             hint: 'Сколько ждать появления WAN-маршрута перед запуском фоновых операций' },
-          { key: 'internet_check_interval_sec', label: 'Период обновления статуса', unit: 'сек', type: 'int', min: 30,
-            hint: 'Как часто независимо обновлять состояние свободного интернета для интерфейса' },
-          { key: 'internet_check_timeout_sec', label: 'Таймаут проверки статуса', unit: 'сек', type: 'int', min: 1,
-            hint: 'Максимальное ожидание одного адреса при обновлении фонового статуса' },
         ],
       },
     ],
@@ -2430,11 +2429,16 @@ document.getElementById('settings-form')?.addEventListener('change', async event
   if (!el || !settingsDraft) return;
   const item = findSettingItem(el.dataset.key);
   if (!item) return;
-  settingsDraft[item.key] = readSettingElement(el, item);
+  const value = readSettingElement(el, item);
+  const changed = !settingsValuesEqual(settingsDraft[item.key], value);
+  settingsDraft[item.key] = value;
   if (SETTINGS_DEPENDENCY_KEYS.has(item.key)) {
     renderSettings();
-  } else {
+  } else if (changed) {
     updateSettingChangedUI(el, item);
+  } else {
+    // The input event already updated the form; keep pending nav clicks intact.
+    return;
   }
   updateSettingsSavebar();
 });

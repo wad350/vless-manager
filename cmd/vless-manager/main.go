@@ -166,18 +166,6 @@ func main() {
 		}
 	}()
 
-	go func() {
-		time.Sleep(30 * time.Second)
-		for {
-			api.checkInternet("background")
-			sleep := api.settingsSnapshot().InternetCheckInterval()
-			if sleep <= 0 {
-				sleep = time.Hour
-			}
-			time.Sleep(sleep)
-		}
-	}()
-
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api)
 

@@ -244,6 +244,48 @@ func TestSettingsAPIValidationAndPersistence(t *testing.T) {
 	}
 }
 
+func TestSharedVPNTestURLSettingsAPI(t *testing.T) {
+	api := newHandlerTestAPI(t)
+	openProbes := append([]string(nil), api.cfg.Settings.OpenProbes...)
+	api.failover.statusFn = func() ProcessStatus { return ProcessStatus{Running: true} }
+	var probed string
+	api.failover.vpnProbeFn = func(url string, timeout time.Duration) (bool, error) {
+		probed = url
+		if timeout != api.settingsSnapshot().HealthTimeout() {
+			t.Fatalf("health timeout unexpectedly uses the server-test timeout: %s", timeout)
+		}
+		return true, nil
+	}
+	tests := []struct{ body, want string }{
+		{`{"ping_test_url":"https://shared.example/check"}`, "https://shared.example/check"},
+		{`{"failover_health_url":"https://legacy.example/check"}`, "https://legacy.example/check"},
+		{`{"ping_test_url":"https://shared.example/check","failover_health_url":"https://ignored.example/check"}`, "https://shared.example/check"},
+	}
+	for _, test := range tests {
+		rec := apiRequest(t, api, http.MethodPatch, "/api/settings", test.body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "failover_health_url") {
+			t.Fatal("API still publishes a separate VPN health URL")
+		}
+		if got := api.settingsSnapshot().PingTestURL; got != test.want {
+			t.Fatalf("server-test URL=%q, want %q", got, test.want)
+		}
+		api.failover.healthTick()
+		if probed != test.want || api.failover.State().VPNHealthURL != test.want {
+			t.Fatalf("active health did not use shared target: probed=%q state=%+v", probed, api.failover.State())
+		}
+		loaded, err := loadConfig(api.cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.Settings.PingTestURL != test.want || strings.Join(loaded.Settings.OpenProbes, ",") != strings.Join(openProbes, ",") {
+			t.Fatalf("shared target was not persisted or direct probes changed: %+v", loaded.Settings)
+		}
+	}
+}
+
 func TestSettingsLogLevelClearsHistoryAndFiltersNewEntries(t *testing.T) {
 	api := newHandlerTestAPI(t)
 	api.pm.event(serviceLogInfo, "subscription", "old.info", "old entry")

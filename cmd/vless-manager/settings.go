@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -22,14 +23,13 @@ type AppSettings struct {
 	AuthSessionTTLHours int  `json:"auth_session_ttl_hours"`
 
 	// --- Failover controller ---
-	FailoverOuterIntervalSec  int    `json:"failover_outer_interval_sec"`  // outer probes period
-	FailoverHealthIntervalSec int    `json:"failover_health_interval_sec"` // VPN-through probe period
-	FailoverHysteresis        int    `json:"failover_hysteresis"`          // consecutive outer-decisions before flip
-	FailoverProbeTimeoutSec   int    `json:"failover_probe_timeout_sec"`   // per-probe HTTP timeout
-	FailoverVPNSwapAfterFails int    `json:"failover_vpn_swap_after_fails"`
-	FailoverStartBackoffSec   int    `json:"failover_start_backoff_sec"`
-	FailoverHealthTimeoutSec  int    `json:"failover_health_timeout_sec"` // SOCKS probe timeout via VPN
-	FailoverHealthURL         string `json:"failover_health_url"`         // endpoint checked through VPN
+	FailoverOuterIntervalSec  int `json:"failover_outer_interval_sec"`  // outer probes period
+	FailoverHealthIntervalSec int `json:"failover_health_interval_sec"` // VPN-through probe period
+	FailoverHysteresis        int `json:"failover_hysteresis"`          // consecutive outer-decisions before flip
+	FailoverProbeTimeoutSec   int `json:"failover_probe_timeout_sec"`   // per-probe HTTP timeout
+	FailoverVPNSwapAfterFails int `json:"failover_vpn_swap_after_fails"`
+	FailoverStartBackoffSec   int `json:"failover_start_backoff_sec"`
+	FailoverHealthTimeoutSec  int `json:"failover_health_timeout_sec"` // SOCKS probe timeout via VPN
 
 	// Probe URL sets — exposed so a user behind a custom whitelist can
 	// override which sites count as "outer" (broadly internet) vs
@@ -46,13 +46,11 @@ type AppSettings struct {
 	SubscriptionPreferVPN bool `json:"subscription_prefer_vpn"`
 
 	// --- Boot / WAN ---
-	WaitForWANSec            int `json:"wait_for_wan_sec"`            // hard cap at boot waiting for default route
-	InternetCheckIntervalSec int `json:"internet_check_interval_sec"` // background WAN health refresh
-	InternetCheckTimeoutSec  int `json:"internet_check_timeout_sec"`  // per-URL probe timeout
+	WaitForWANSec int `json:"wait_for_wan_sec"` // hard cap at boot waiting for default route
 
 	// --- Ping ---
 	PingTimeoutSec int    `json:"ping_timeout_sec"`
-	PingTestURL    string `json:"ping_test_url"`
+	PingTestURL    string `json:"ping_test_url"` // shared target for server selection and active VPN health
 	// PingMaxParallel controls parallel temporary Xray instances. 0 or 1
 	// is sequential; larger values are applied as configured.
 	PingMaxParallel    int `json:"ping_max_parallel"`
@@ -87,6 +85,29 @@ type AppSettings struct {
 	BypassDomains []string `json:"bypass_domains"`
 }
 
+func (s *AppSettings) UnmarshalJSON(data []byte) error {
+	type settings AppSettings
+	next := settings(*s)
+	if err := json.Unmarshal(data, &next); err != nil {
+		return err
+	}
+	var old struct {
+		HealthURL string  `json:"failover_health_url"`
+		TestURL   *string `json:"ping_test_url"`
+	}
+	if err := json.Unmarshal(data, &old); err != nil {
+		return err
+	}
+	// Keep a custom legacy health target if the server test still used its
+	// default. When both were customized, the existing server-test URL wins.
+	if old.HealthURL != "" && (old.TestURL == nil || next.PingTestURL == "" ||
+		(next.PingTestURL == defaultPingTestURL && old.HealthURL != "http://cp.cloudflare.com/generate_204")) {
+		next.PingTestURL = old.HealthURL
+	}
+	*s = AppSettings(next)
+	return nil
+}
+
 // defaultSettings returns a brand-new AppSettings populated with the same
 // values the code used to bake in as compile-time constants. Loading a
 // pre-Settings config.json transparently picks these up.
@@ -102,7 +123,6 @@ func defaultSettings() AppSettings {
 		FailoverVPNSwapAfterFails: 2,
 		FailoverStartBackoffSec:   300,
 		FailoverHealthTimeoutSec:  6,
-		FailoverHealthURL:         "http://cp.cloudflare.com/generate_204",
 		OpenProbes: []string{
 			"http://cp.cloudflare.com/generate_204",
 			"http://detectportal.firefox.com/success.txt",
@@ -119,12 +139,10 @@ func defaultSettings() AppSettings {
 		SubscriptionFirstDelayMin:   10,
 		SubscriptionPreferVPN:       true,
 
-		WaitForWANSec:            180,
-		InternetCheckIntervalSec: 3600,
-		InternetCheckTimeoutSec:  5,
+		WaitForWANSec: 180,
 
 		PingTimeoutSec:     30,
-		PingTestURL:        "http://www.gstatic.com/generate_204",
+		PingTestURL:        defaultPingTestURL,
 		PingMaxParallel:    0,
 		PingStartupSleepMS: 300,
 		PingSelectionMode:  "priority",
@@ -163,8 +181,6 @@ func (s AppSettings) validate() error {
 		{"subscription_fetch_timeout_sec", s.SubscriptionFetchTimeoutSec, 3, 300},
 		{"subscription_first_delay_min", s.SubscriptionFirstDelayMin, 0, 1440},
 		{"wait_for_wan_sec", s.WaitForWANSec, 10, 1800},
-		{"internet_check_interval_sec", s.InternetCheckIntervalSec, 30, 86400},
-		{"internet_check_timeout_sec", s.InternetCheckTimeoutSec, 1, 120},
 		{"ping_timeout_sec", s.PingTimeoutSec, 3, 120},
 		{"ping_startup_sleep_ms", s.PingStartupSleepMS, 50, 5000},
 		{"ping_cache_max_age_min", s.PingCacheMaxAgeMin, 1, 1440},
@@ -178,9 +194,6 @@ func (s AppSettings) validate() error {
 		return fmt.Errorf("ping_max_parallel must not be negative")
 	}
 	if err := validateHTTPURL("ping_test_url", s.PingTestURL); err != nil {
-		return err
-	}
-	if err := validateHTTPURL("failover_health_url", s.FailoverHealthURL); err != nil {
 		return err
 	}
 	if err := validateProbeURLs("open_probes", s.OpenProbes); err != nil {
@@ -307,24 +320,12 @@ func (s *AppSettings) fillDefaults() bool {
 		s.WaitForWANSec = d.WaitForWANSec
 		changed = true
 	}
-	if s.InternetCheckIntervalSec <= 0 {
-		s.InternetCheckIntervalSec = d.InternetCheckIntervalSec
-		changed = true
-	}
-	if s.InternetCheckTimeoutSec <= 0 {
-		s.InternetCheckTimeoutSec = d.InternetCheckTimeoutSec
-		changed = true
-	}
 	if s.PingTimeoutSec <= 0 {
 		s.PingTimeoutSec = d.PingTimeoutSec
 		changed = true
 	}
 	if s.PingTestURL == "" {
 		s.PingTestURL = d.PingTestURL
-		changed = true
-	}
-	if s.FailoverHealthURL == "" {
-		s.FailoverHealthURL = d.FailoverHealthURL
 		changed = true
 	}
 	if s.PingStartupSleepMS <= 0 {
@@ -391,12 +392,6 @@ func (s AppSettings) HealthTimeout() time.Duration {
 }
 func (s AppSettings) WaitForWANTimeout() time.Duration {
 	return time.Duration(s.WaitForWANSec) * time.Second
-}
-func (s AppSettings) InternetCheckInterval() time.Duration {
-	return time.Duration(s.InternetCheckIntervalSec) * time.Second
-}
-func (s AppSettings) InternetCheckTimeout() time.Duration {
-	return time.Duration(s.InternetCheckTimeoutSec) * time.Second
 }
 func (s AppSettings) PingTimeout() time.Duration {
 	return time.Duration(s.PingTimeoutSec) * time.Second

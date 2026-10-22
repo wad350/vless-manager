@@ -5,21 +5,9 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"sync"
 	"syscall"
 	"time"
 )
-
-// healthCheckURLs are the public endpoints we probe to decide whether the
-// underlying WAN connection has real internet (not just operator-whitelisted
-// services like ya.ru / mail.ru). We avoid Google / Yandex specifically
-// because they're often zero-rated / on carrier whitelists and would give
-// false positives when the rest of the internet is unreachable.
-var healthCheckURLs = []string{
-	"http://cp.cloudflare.com/generate_204",
-	"http://detectportal.firefox.com/success.txt",
-	"http://nmcheck.gnome.org/check_network_status.txt",
-}
 
 // wanProbeCall is a test seam for connectivity decision logic. Production
 // always points at wanProbe; tests replace it without touching real routes.
@@ -38,8 +26,8 @@ type ProbeResult struct {
 }
 
 // InternetStatus reports whether real internet is reachable directly via WAN
-// (bypassing the VPN tunnel). At least one of three non-whitelisted endpoints
-// must succeed for "ok".
+// (bypassing the VPN tunnel). It is derived from the operator controller's
+// latest open-internet probes, not a separate network check.
 type InternetStatus struct {
 	OK        bool          `json:"ok"`
 	Reachable int           `json:"reachable"`
@@ -49,74 +37,10 @@ type InternetStatus struct {
 	Probes    []ProbeResult `json:"probes"`
 }
 
-// healthMonitor stores the most recent WAN connectivity check. Refreshed by
-// a background goroutine.
-//
-// Probe URLs and per-probe timeout come from AppSettings (via settingsFn so we
-// don't need a back-pointer to *apiServer). Falling back to defaults when the
-// user empties the list keeps the UI responsive even with a misconfiguration.
-type healthMonitor struct {
-	mu         sync.RWMutex
-	status     InternetStatus
-	settingsFn func() AppSettings
-}
-
-func newHealthMonitor() *healthMonitor {
-	return &healthMonitor{status: InternetStatus{LatencyMS: -1}}
-}
-
-// SetSettingsSource wires the snapshot function used to read URLs/timeouts.
-// Called once during apiServer init.
-func (h *healthMonitor) SetSettingsSource(fn func() AppSettings) {
-	h.mu.Lock()
-	h.settingsFn = fn
-	h.mu.Unlock()
-}
-
-func (h *healthMonitor) Status() InternetStatus {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.status
-}
-
-// Check probes every healthCheckURL in parallel via WAN-only dialer and
-// stores the aggregated result.
-func (h *healthMonitor) Check() InternetStatus {
-	urls := healthCheckURLs
-	timeout := 5 * time.Second
-	h.mu.RLock()
-	fn := h.settingsFn
-	h.mu.RUnlock()
-	if fn != nil {
-		st := fn()
-		if len(st.OpenProbes) > 0 {
-			urls = st.OpenProbes
-		}
-		if t := st.InternetCheckTimeout(); t > 0 {
-			timeout = t
-		}
-	}
-	probes := make([]ProbeResult, len(urls))
-	var wg sync.WaitGroup
-	for i, u := range urls {
-		wg.Add(1)
-		go func(i int, u string) {
-			defer wg.Done()
-			start := time.Now()
-			ok, err := wanProbeCall(u, timeout)
-			pr := ProbeResult{URL: u, OK: ok, LatencyMS: time.Since(start).Milliseconds()}
-			if err != nil {
-				pr.Error = err.Error()
-				pr.LatencyMS = -1
-			}
-			probes[i] = pr
-		}(i, u)
-	}
-	wg.Wait()
-
+func (s FailoverState) InternetStatus() InternetStatus {
 	reachable := 0
 	bestLat := int64(-1)
-	for _, p := range probes {
+	for _, p := range s.OpenProbes {
 		if p.OK {
 			reachable++
 			if bestLat < 0 || p.LatencyMS < bestLat {
@@ -124,18 +48,14 @@ func (h *healthMonitor) Check() InternetStatus {
 			}
 		}
 	}
-	status := InternetStatus{
+	return InternetStatus{
 		OK:        reachable > 0,
 		Reachable: reachable,
-		Total:     len(probes),
+		Total:     len(s.OpenProbes),
 		LatencyMS: bestLat,
-		CheckedAt: time.Now(),
-		Probes:    probes,
+		CheckedAt: s.LastCheck,
+		Probes:    s.OpenProbes,
 	}
-	h.mu.Lock()
-	h.status = status
-	h.mu.Unlock()
-	return status
 }
 
 // wanDialer returns a net.Dialer that marks all outgoing sockets with

@@ -46,6 +46,68 @@ func TestSettingsUICoversEveryAppSettingExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestSettingsUIHasNoSeparateInternetStatusTimers(t *testing.T) {
+	appJS, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"internet_check_interval_sec", "internet_check_timeout_sec"} {
+		if strings.Contains(string(appJS), key) {
+			t.Errorf("retired setting %q still appears in the UI", key)
+		}
+	}
+}
+
+func TestSubscriptionSettingsUIOwnsRefreshAndServerChecks(t *testing.T) {
+	appJS, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(appJS)
+	sections := regexp.MustCompile(`(?m)^    id: '([^']+)',`).FindAllStringSubmatchIndex(js, -1)
+	want := map[string]string{
+		"subscription_refresh_hours":     "updates",
+		"subscription_first_delay_min":   "updates",
+		"subscription_fetch_timeout_sec": "updates",
+		"subscription_prefer_vpn":        "updates",
+		"ping_test_url":                  "updates",
+		"ping_timeout_sec":               "updates",
+		"ping_max_parallel":              "updates",
+		"ping_startup_sleep_ms":          "updates",
+		"open_probes":                    "expert",
+		"whitelist_probes":               "expert",
+	}
+	for key, expected := range want {
+		position := strings.Index(js, "{ key: '"+key+"'")
+		if position < 0 {
+			t.Errorf("setting %q is missing", key)
+			continue
+		}
+		actual := ""
+		for _, section := range sections {
+			if section[0] > position {
+				break
+			}
+			actual = js[section[2]:section[3]]
+		}
+		if actual != expected {
+			t.Errorf("setting %q belongs to section %q, want %q", key, actual, expected)
+		}
+	}
+	for _, label := range []string{
+		"Адреса проверки интернета без VPN",
+		"Адреса белого списка без VPN",
+		"Адрес проверки через VPN",
+	} {
+		if !strings.Contains(js, label) {
+			t.Errorf("missing explicit probe-purpose label %q", label)
+		}
+	}
+	if strings.Contains(js, "key: 'failover_health_url'") {
+		t.Error("duplicate VPN health URL control still exists")
+	}
+}
+
 func TestSettingsWorkspaceHasRequiredControls(t *testing.T) {
 	indexHTML, err := webFS.ReadFile("web/index.html")
 	if err != nil {
