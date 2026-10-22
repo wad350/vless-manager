@@ -16,7 +16,7 @@ const (
 func generateXrayConfig(cfg *Config, srv *VLESSServer) ([]byte, error) {
 	profile := serverWithTLSProfile(*srv, cfg.Settings.TLSClientProfile)
 	srv = &profile
-	config, err := xrayBaseConfig(srv)
+	config, err := xrayBaseConfig(srv, cfg.Settings.PingTestURL)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +99,7 @@ func xraySocketOptions() map[string]any {
 	return options
 }
 
-func xrayBaseConfig(srv *VLESSServer) (map[string]any, error) {
+func xrayBaseConfig(srv *VLESSServer, probeURL string) (map[string]any, error) {
 	outbounds, err := buildXrayProxyOutbounds(srv)
 	if err != nil {
 		return nil, err
@@ -125,6 +125,9 @@ func xrayBaseConfig(srv *VLESSServer) (map[string]any, error) {
 		},
 	}
 	if len(srv.Members) > 0 {
+		if probeURL == "" {
+			probeURL = defaultPingTestURL
+		}
 		delete(finalRule, "outboundTag")
 		finalRule["balancerTag"] = "proxy"
 		routing["balancers"] = []any{map[string]any{
@@ -132,7 +135,7 @@ func xrayBaseConfig(srv *VLESSServer) (map[string]any, error) {
 			"strategy": map[string]any{"type": "leastPing"},
 		}}
 		config["observatory"] = map[string]any{
-			"subjectSelector": []string{"proxy-"}, "probeURL": defaultPingTestURL,
+			"subjectSelector": []string{"proxy-"}, "probeURL": probeURL,
 			"probeInterval": "10m", "enableConcurrency": true,
 		}
 	}

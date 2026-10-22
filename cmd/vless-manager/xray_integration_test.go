@@ -93,11 +93,10 @@ func TestGroupedProfileObservatoryProbes(t *testing.T) {
 			"finalRules": []any{map[string]any{"action": "allow", "ip": []string{"127.0.0.0/8"}}},
 		}}},
 	}, false)
-	config, err := xrayBaseConfig(&VLESSServer{Members: []VLESSServer{member, member}})
+	config, err := xrayBaseConfig(&VLESSServer{Members: []VLESSServer{member, member}}, target.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	config["observatory"].(map[string]any)["probeURL"] = target.URL
 	client := startTestXray(t, config, false)
 	defer client.Close()
 	for i := 0; i < 2; i++ {
@@ -116,6 +115,24 @@ func TestGroupedProfileObservatoryProbes(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("grouped tunnel status = %d", response.StatusCode)
+	}
+	select {
+	case <-probes: // The explicit request above also reaches the target.
+	case <-time.After(5 * time.Second):
+		t.Fatal("grouped tunnel request did not reach target")
+	}
+	client.Close()
+	temporary, _, err := startTemporaryVLESSSOCKS(&VLESSServer{Members: []VLESSServer{member, member}}, target.URL, newRingBuffer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer temporary.Close()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-probes:
+		case <-time.After(5 * time.Second):
+			t.Fatal("temporary grouped profile did not inherit custom probe URL")
+		}
 	}
 }
 
@@ -149,7 +166,7 @@ func TestXrayTransportsTCPUDPAndTraffic(t *testing.T) {
 				}}},
 			}, false)
 			clientPort := unusedTCPPort(t)
-			config, err := xrayBaseConfig(srv)
+			config, err := xrayBaseConfig(srv, defaultPingTestURL)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -370,7 +387,7 @@ func TestXrayConcurrentProbesKeepMainTunnelWorking(t *testing.T) {
 		}}},
 	}, false)
 	mainPort := unusedTCPPort(t)
-	config, err := xrayBaseConfig(srv)
+	config, err := xrayBaseConfig(srv, defaultPingTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}

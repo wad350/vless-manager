@@ -262,14 +262,14 @@ func startXray(data []byte, logs *ringBuffer, mainTunnel bool) (engineHandle, er
 	return b, nil
 }
 
-func startTemporaryVLESSSOCKS(srv *VLESSServer, logs *ringBuffer) (engineHandle, int, error) {
+func startTemporaryVLESSSOCKS(srv *VLESSServer, probeURL string, logs *ringBuffer) (engineHandle, int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, 0, err
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
-	cfg, err := xrayBaseConfig(srv)
+	cfg, err := xrayBaseConfig(srv, probeURL)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -290,7 +290,7 @@ func pingOneThroughVLESSContext(ctx context.Context, srv *VLESSServer, timeout t
 		failed.Error = err.Error()
 		return failed
 	}
-	b, port, err := startTemporaryVLESSSOCKS(srv, newRingBuffer())
+	b, port, err := startTemporaryVLESSSOCKS(srv, testURL, newRingBuffer())
 	if err != nil {
 		failed.Error = err.Error()
 		return failed

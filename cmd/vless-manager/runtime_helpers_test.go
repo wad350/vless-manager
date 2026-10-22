@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -48,20 +47,70 @@ func TestWANProbeNetworkUsesIPv4(t *testing.T) {
 	}
 }
 
-func TestWaitForWANWithDeterministicProbe(t *testing.T) {
+func TestWaitForWANUsesLocalReadinessWithoutHTTP(t *testing.T) {
 	oldProbe := wanProbeCall
 	defer func() { wanProbeCall = oldProbe }()
-	var calls atomic.Int32
 	wanProbeCall = func(string, time.Duration) (bool, error) {
-		calls.Add(1)
-		return true, nil
+		t.Fatal("WAN readiness must not depend on a public HTTP endpoint")
+		return false, errors.New("operator whitelist")
 	}
-	if !WaitForWAN(time.Second) || calls.Load() != 1 {
-		t.Fatalf("WaitForWAN calls=%d", calls.Load())
+	_ = WaitForWAN(time.Millisecond)
+	calls := 0
+	if !waitForWAN(time.Second, func() bool { calls++; return true }) || calls != 1 {
+		t.Fatalf("ready WAN calls=%d", calls)
 	}
-	wanProbeCall = func(string, time.Duration) (bool, error) { return false, errors.New("offline") }
-	if WaitForWAN(time.Millisecond) {
-		t.Fatal("WaitForWAN unexpectedly succeeded")
+	calls = 0
+	if !waitForWAN(2*time.Second, func() bool { calls++; return calls == 2 }) || calls != 2 {
+		t.Fatalf("late modem route calls=%d", calls)
+	}
+	started := time.Now()
+	if waitForWAN(10*time.Millisecond, func() bool { return false }) {
+		t.Fatal("unconfigured WAN unexpectedly succeeded")
+	}
+	if elapsed := time.Since(started); elapsed >= 250*time.Millisecond {
+		t.Fatalf("readiness sleep exceeded timeout: %s", elapsed)
+	}
+	if waitForWAN(0, func() bool { t.Fatal("zero timeout checked readiness"); return true }) {
+		t.Fatal("zero timeout succeeded")
+	}
+}
+
+func TestDefaultWANRouteReadiness(t *testing.T) {
+	header := "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n"
+	tests := []struct {
+		name, routes string
+		ifaceReady   bool
+		want         bool
+	}{
+		{"no route", "", true, false},
+		{"cellular whitelist", "qmi_br0 00000000 0100000A 0003 0 0 0 00000000 0 0 0", true, true},
+		{"ethernet on-link", "eth0 00000000 00000000 0001 0 0 100 00000000 0 0 0", true, true},
+		{"PPP", "ppp0 00000000 00000000 0001 0 0 0 00000000 0 0 0", true, true},
+		{"interface down or no IPv4", "qmi_br0 00000000 0100000A 0003 0 0 0 00000000 0 0 0", false, false},
+		{"route down", "qmi_br0 00000000 0100000A 0002 0 0 0 00000000 0 0 0", true, false},
+		{"reject route", "qmi_br0 00000000 00000000 0201 0 0 0 00000000 0 0 0", true, false},
+		{"loopback TPROXY route", "lo 00000000 00000000 0001 0 0 0 00000000 0 0 0", true, false},
+		{"legacy tunnel", "tun0 00000000 00000000 0001 0 0 0 00000000 0 0 0", true, false},
+		{"connected subnet", "br0 00000000 00000000 0001 0 0 0 00FFFFFF 0 0 0", true, false},
+		{"nondefault destination", "br0 0000000A 00000000 0001 0 0 0 00FFFFFF 0 0 0", true, false},
+		{"invalid flags", "qmi_br0 00000000 0100000A invalid 0 0 0 00000000 0 0 0", true, false},
+		{"invalid destination", "qmi_br0 invalid 0100000A 0003 0 0 0 00000000 0 0 0", true, false},
+		{"invalid mask", "qmi_br0 00000000 0100000A 0003 0 0 0 invalid 0 0 0", true, false},
+		{"short row", "qmi_br0 00000000", true, false},
+		{"later usable route", "lo 00000000 00000000 0001 0 0 0 00000000 0 0 0\nqmi_br0 00000000 0100000A 0003 0 0 0 00000000 0 0 0", true, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ready := defaultWANRouteReady(strings.NewReader(header+test.routes), func(name string) bool {
+				if name == "lo" || name == "tun0" || name == "Iface" {
+					t.Fatalf("non-WAN interface checked: %s", name)
+				}
+				return test.ifaceReady
+			})
+			if ready != test.want {
+				t.Fatalf("ready=%v, want %v", ready, test.want)
+			}
+		})
 	}
 }
 

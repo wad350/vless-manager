@@ -7,6 +7,8 @@ Keep upstream licenses when updating. This embedded runtime includes local chang
 
 - Instance-scoped DNS/outbound references and gRPC contexts/client cleanup;
   outbound cache and Observatory snapshots are synchronized across concurrent probes.
+- Observatory error reports use synchronized immutable snapshots, including late
+  errors from outbound workers after a probe has returned or the core is closing.
 - Stats-wrapped readers preserve MultiBuffer and UDP destinations; upload accounting
   includes buffered writes. gRPC mixed reads do not replay consumed response headers.
 - gRPC transfers owned payloads and uses size-aware pooled protobuf buffers;

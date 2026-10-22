@@ -286,6 +286,54 @@ func TestSharedVPNTestURLSettingsAPI(t *testing.T) {
 	}
 }
 
+func TestSharedProbeURLRestartOnlyForActiveGroups(t *testing.T) {
+	for _, test := range []struct {
+		name                     string
+		group, changed, selected bool
+	}{
+		{"active group changed", true, true, true},
+		{"active group unchanged", true, false, true},
+		{"single server changed", false, true, true},
+		{"no active group", true, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			api := newHandlerTestAPI(t)
+			server := VLESSServer{Address: "one.example", Port: 443, UUID: "00000000-0000-0000-0000-000000000301", Network: "tcp"}
+			if test.group {
+				server.Members = []VLESSServer{server, server}
+			}
+			server.ID = serverFingerprint(server)
+			api.cfg.Servers = []VLESSServer{server}
+			if test.selected {
+				api.cfg.ActiveServer = server.ID
+			}
+			target := api.cfg.Settings.PingTestURL
+			if test.changed {
+				target = "https://health.example/custom"
+			}
+			body, _ := json.Marshal(map[string]string{"ping_test_url": target})
+			rec := apiRequest(t, api, http.MethodPatch, "/api/settings", string(body))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			entries, _ := api.pm.logs.Entries(0)
+			want := "false"
+			if test.group && test.changed && test.selected {
+				want = "true"
+			}
+			for _, entry := range entries {
+				if entry.Event == "settings.updated" {
+					if entry.Fields["restart_required"] != want {
+						t.Fatalf("restart_required=%s, want %s", entry.Fields["restart_required"], want)
+					}
+					return
+				}
+			}
+			t.Fatal("settings update did not report restart policy")
+		})
+	}
+}
+
 func TestSettingsLogLevelClearsHistoryAndFiltersNewEntries(t *testing.T) {
 	api := newHandlerTestAPI(t)
 	api.pm.event(serviceLogInfo, "subscription", "old.info", "old entry")

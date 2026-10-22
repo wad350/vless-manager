@@ -857,9 +857,11 @@ func (s *apiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.failover.ReloadSettings()
 
+		active := cfgSnap.activeServer()
+		groupProbeChanged := previous.PingTestURL != out.PingTestURL && active != nil && len(active.Members) > 0
 		restartRequired := previous.BypassRouteRussia != out.BypassRouteRussia ||
 			!slices.Equal(previous.BypassDomains, out.BypassDomains) ||
-			previous.LogLevel != out.LogLevel || profileChanged
+			previous.LogLevel != out.LogLevel || profileChanged || groupProbeChanged
 		s.pm.event(serviceLogInfo, "manager", "settings.updated",
 			"настройки сохранены",
 			field("service_log_level", out.ServiceLogLevel),

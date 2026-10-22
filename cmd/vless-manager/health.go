@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -95,19 +99,64 @@ func wanDialContext(timeout time.Duration) func(context.Context, string, string)
 	}
 }
 
-// WaitForWAN blocks until a WAN-only HTTP probe succeeds or the timeout
-// elapses. Used at boot to defer starting Xray until the modem has
-// finished bringing the default route up.
-//
-// Uses exponential backoff (0.5 s → 1 s → 2 s → 3 s, then constant) to
-// converge quickly when the modem boots fast (cached UICC) without hammering
-// the network when it's genuinely down.
+// WAN readiness is local: a whitelist must not prevent the VPN from starting.
+// /proc/net/route exposes the main IPv4 table, not our TPROXY table 100.
+func wanRouteReady() bool {
+	routes, err := os.Open("/proc/net/route")
+	if err != nil {
+		return false
+	}
+	defer routes.Close()
+	return defaultWANRouteReady(routes, func(name string) bool {
+		iface, err := net.InterfaceByName(name)
+		if err != nil || iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			return false
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return false
+		}
+		for _, addr := range addrs {
+			ip, _, err := net.ParseCIDR(addr.String())
+			if err == nil && ip.To4() != nil && !ip.IsUnspecified() && !ip.IsLoopback() {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func defaultWANRouteReady(routes io.Reader, interfaceReady func(string) bool) bool {
+	const routeUp, routeReject = 0x1, 0x200
+	scanner := bufio.NewScanner(routes)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 8 || fields[0] == "lo" || fields[0] == tunIface {
+			continue
+		}
+		destination, dstErr := strconv.ParseUint(fields[1], 16, 32)
+		mask, maskErr := strconv.ParseUint(fields[7], 16, 32)
+		flags, flagsErr := strconv.ParseUint(fields[3], 16, 32)
+		if dstErr == nil && maskErr == nil && flagsErr == nil && destination == 0 && mask == 0 &&
+			flags&routeUp != 0 && flags&routeReject == 0 && interfaceReady(fields[0]) {
+			return true
+		}
+	}
+	return false
+}
+
+// WaitForWAN waits for an IPv4 default route and an up, addressed interface.
+// Operator reachability remains the failover controller's responsibility.
 func WaitForWAN(timeout time.Duration) bool {
+	return waitForWAN(timeout, wanRouteReady)
+}
+
+func waitForWAN(timeout time.Duration, ready func() bool) bool {
 	deadline := time.Now().Add(timeout)
 	delays := []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second, 3 * time.Second}
 	i := 0
 	for time.Now().Before(deadline) {
-		if ok, _ := wanProbeCall("http://cp.cloudflare.com/generate_204", 3*time.Second); ok {
+		if ready() {
 			return true
 		}
 		d := delays[len(delays)-1]
@@ -115,6 +164,12 @@ func WaitForWAN(timeout time.Duration) bool {
 			d = delays[i]
 		}
 		i++
+		if remaining := time.Until(deadline); d > remaining {
+			d = remaining
+		}
+		if d <= 0 {
+			return false
+		}
 		time.Sleep(d)
 	}
 	return false

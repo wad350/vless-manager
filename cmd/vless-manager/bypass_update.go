@@ -36,7 +36,7 @@ func (s *apiServer) fetchBypassSource(ctx context.Context, source string) ([]str
 	}
 	s.pm.event(serviceLogDebug, "bypass", "fetch.retry", "загружаем список через VLESS", field("source", source), field("error", err))
 	st := s.settingsSnapshot()
-	client, box, err := httpClientViaVLESS(copy, timeout, st.PingStartupSleep(), s.pm.logs)
+	client, box, err := httpClientViaVLESS(copy, timeout, st.PingStartupSleep(), st.PingTestURL, s.pm.logs)
 	if err != nil {
 		return nil, "vless", err
 	}

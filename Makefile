@@ -1,11 +1,11 @@
 # ── Project metadata ──────────────────────────────────────────────────────────
-VERSION      := 1.18.2
+VERSION      := 1.18.3
 ARCH         ?= aarch64-3.10
 BUILD_DATE   := $(shell date -u +%Y-%m-%d)
 
 # ── Embedded Xray ─────────────────────────────────────────────────────────
 # Xray v26.10.21 prerelease, pinned by commit in go.mod.
-XRAY_TAG  := v26.10.21+manager.26
+XRAY_TAG  := v26.10.21+manager.27
 UPDATE_REPOSITORY ?= wad350/vless-manager
 
 # ── Go cross-compile target (Keenetic MT7621 = mipsle softfloat) ──────────────

@@ -765,8 +765,8 @@ func rawJSONFirstString(raw json.RawMessage) string {
 	return ""
 }
 
-func httpClientViaVLESS(srv *VLESSServer, timeout, startupWait time.Duration, logs *ringBuffer) (*http.Client, engineHandle, error) {
-	box, port, err := startTemporaryVLESSSOCKS(srv, logs)
+func httpClientViaVLESS(srv *VLESSServer, timeout, startupWait time.Duration, probeURL string, logs *ringBuffer) (*http.Client, engineHandle, error) {
+	box, port, err := startTemporaryVLESSSOCKS(srv, probeURL, logs)
 	if err != nil {
 		return nil, nil, err
 	}

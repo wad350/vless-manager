@@ -309,7 +309,7 @@ func TestBuildXrayAutoProfile(t *testing.T) {
 	if len(outs) != 2 || outs[0]["tag"] != "proxy-1" || outs[1]["tag"] != "proxy-2" {
 		t.Fatalf("unexpected profile outbounds: %#v", outs)
 	}
-	config, err := xrayBaseConfig(profile)
+	config, err := xrayBaseConfig(profile, defaultPingTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,6 +322,37 @@ func TestBuildXrayAutoProfile(t *testing.T) {
 	}
 	if config["observatory"] == nil || config["routing"].(map[string]any)["balancers"] == nil {
 		t.Fatal("profile lacks automatic selection")
+	}
+}
+
+func TestGeneratedGroupUsesSharedVPNProbeURL(t *testing.T) {
+	member := VLESSServer{Address: "one.example", Port: 443, UUID: "00000000-0000-0000-0000-000000000301", Network: "tcp"}
+	group := &VLESSServer{Name: "Auto", Members: []VLESSServer{member, member}}
+	for _, target := range []string{"https://health.example/custom?probe=1", ""} {
+		cfg := defaultConfig()
+		cfg.Settings.PingTestURL = target
+		data, err := generateXrayConfig(cfg, group)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var generated map[string]any
+		if err := json.Unmarshal(data, &generated); err != nil {
+			t.Fatal(err)
+		}
+		want := target
+		if want == "" {
+			want = defaultPingTestURL
+		}
+		if got := generated["observatory"].(map[string]any)["probeURL"]; got != want {
+			t.Fatalf("group probe URL=%v, want %q", got, want)
+		}
+	}
+	config, err := xrayBaseConfig(&member, "https://health.example/custom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config["observatory"] != nil {
+		t.Fatal("single-server profile must not add a group probe")
 	}
 }
 
